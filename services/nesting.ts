@@ -60,6 +60,10 @@ export const performNesting = (
         return [];
     }
 
+    // Override bottom margin logic based on clamp safety
+    // If "Nest Under Clamps" is OFF (Safety ON), we force an 80mm margin at the bottom.
+    const effectiveMarginBottom = nestUnderClamps ? sheetMarginBottom : 80;
+
     // Flatten the list of parts to place
     const partsToPlace: { part: Part, instanceId: string, nesting: NestingConstraints }[] = [];
     
@@ -132,7 +136,8 @@ export const performNesting = (
         
         const placedOnSheet: NestLayout['sheets'][0]['placedParts'] = [];
         const packWidth = currentSheetDef.width - sheetMarginLeft - sheetMarginRight;
-        const packHeight = currentSheetDef.height - sheetMarginTop - sheetMarginBottom;
+        // Use effectiveMarginBottom here
+        const packHeight = currentSheetDef.height - sheetMarginTop - effectiveMarginBottom;
 
         let simX = 0;
         let simY = 0;
@@ -230,7 +235,8 @@ export const performNesting = (
 
                 // Y Transformation
                 if (isBottomAligned) {
-                    worldY = (currentSheetDef.height - sheetMarginBottom) - (simY + bestFit.height);
+                    // Use effectiveMarginBottom here
+                    worldY = (currentSheetDef.height - effectiveMarginBottom) - (simY + bestFit.height);
                 } else {
                     worldY = sheetMarginTop + simY;
                 }
