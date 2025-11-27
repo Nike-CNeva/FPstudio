@@ -1,0 +1,5 @@
+{
+  "name": "Finn-Power CAD/CAM Studio",
+  "description": "A comprehensive CAD/CAM application for creating and managing punching programs for Finn-Power machines. Features include a tool library, DXF import, manual and automatic tool placement, part nesting on sheets, and G-code post-processing.",
+  "requestFramePermissions": []
+}
