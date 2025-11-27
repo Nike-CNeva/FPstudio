@@ -1,10 +1,10 @@
 
 import React, { useState, useEffect } from 'react';
-import { ParametricScript, Tool, Part, PartProfile } from '../types';
+import { ParametricScript, Tool, Part, PartProfile, ScheduledPart } from '../types';
 import { TrashIcon, CodeIcon, SaveIcon, PlayIcon, PlusIcon, FileExcelIcon } from './Icons';
 import { SidebarTabButton } from './common/Button';
 import { executeParametricScript } from '../services/scriptExecutor';
-import { generateId } from '../utils/helpers';
+import { generateId, generatePartNameFromProfile } from '../utils/helpers';
 import { ExcelImportModal } from './ExcelImportModal';
 import { detectPartProfile } from '../services/geometry';
 import * as XLSX from 'xlsx';
@@ -13,12 +13,14 @@ import { ModalInputField } from './common/InputField';
 interface ScriptLibraryViewProps {
     scripts: ParametricScript[];
     tools: Tool[];
+    parts: Part[]; // Existing concrete parts for lookup
     onSaveScript: (script: ParametricScript) => void;
     onDeleteScript: (id: string) => void;
     onCreatePart: (part: Part) => void;
+    onBatchProcess: (newParts: Part[], scheduledParts: ScheduledPart[]) => void;
 }
 
-export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ scripts, tools, onSaveScript, onDeleteScript, onCreatePart }) => {
+export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ scripts, tools, parts, onSaveScript, onDeleteScript, onCreatePart, onBatchProcess }) => {
     const [selectedScriptId, setSelectedScriptId] = useState<string | null>(null);
     const [searchQuery, setSearchQuery] = useState('');
     const [activeTab, setActiveTab] = useState<'run' | 'edit'>('run');
@@ -168,15 +170,25 @@ export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ scripts, t
 
     const handleCreateConcretePart = () => {
         if (previewPart && selectedScript) {
+            const profile = {
+                type: profileType,
+                orientation: orientation,
+                dims: { ...dims }
+            };
+            
+            // Use the centralized naming logic
+            const partName = generatePartNameFromProfile(
+                selectedScript.name, 
+                profile, 
+                runWidth, 
+                runHeight
+            );
+
             const newPart = {
                 ...previewPart,
                 id: generateId(),
-                name: `${selectedScript.name}_${runHeight}x${runWidth}`,
-                profile: {
-                    type: profileType,
-                    orientation: orientation,
-                    dims: { ...dims }
-                }
+                name: partName,
+                profile: profile
             };
             if (profileType === 'flat') {
                  newPart.profile = detectPartProfile(newPart.geometry);
@@ -205,13 +217,6 @@ export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ scripts, t
         }
     };
 
-    const handleExcelProcess = async (file: File) => {
-        // ... (existing excel logic, can pass empty params or default dims if needed)
-        // Omitted for brevity, same as before
-        alert("Функция импорта в разработке (требуется обновление логики параметров)");
-        setShowExcelModal(false);
-    };
-
     const getLabel = (key: 'a'|'b'|'c') => {
         if (orientation === 'vertical') {
             if (profileType === 'L') return key === 'a' ? 'Левая (A)' : 'Правая (B)';
@@ -233,7 +238,14 @@ export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ scripts, t
                             <CodeIcon className="w-5 h-5 mr-2 text-purple-400" />
                             Библиотека
                         </h2>
-                        {/* Import button */}
+                        <button 
+                            onClick={() => setShowExcelModal(true)} 
+                            className="bg-green-600 hover:bg-green-500 text-white p-2 rounded shadow text-xs flex items-center space-x-1"
+                            title="Импорт из Excel"
+                        >
+                            <FileExcelIcon className="w-4 h-4" />
+                            <span>Импорт</span>
+                        </button>
                     </div>
                     <input 
                         type="text" 
@@ -333,6 +345,16 @@ export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ scripts, t
                     </div>
                 ) : <div className="flex items-center justify-center h-full text-gray-500">Выберите скрипт</div>}
             </div>
+
+            {showExcelModal && (
+                <ExcelImportModal 
+                    onClose={() => setShowExcelModal(false)} 
+                    scripts={scripts}
+                    parts={parts}
+                    tools={tools}
+                    onProcess={onBatchProcess}
+                />
+            )}
         </main>
     );
 };

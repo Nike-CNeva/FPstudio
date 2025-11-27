@@ -2,7 +2,7 @@
 import React, { useState, ChangeEvent, useEffect, useMemo } from 'react';
 import { AppMode, NestLayout, Part, Tool, PlacedTool, ManualPunchMode, Point, NibbleSettings, DestructSettings, PlacementReference, SnapMode, ScheduledPart, TurretLayout, AutoPunchSettings, PlacementSide, TeachCycle, ToastMessage, ParametricScript } from './types';
 import { initialTools, initialParts, initialNests, initialTurretLayouts, initialScripts } from './data/initialData';
-import { generateId } from './utils/helpers';
+import { generateId, getPartBaseName, generatePartNameFromProfile } from './utils/helpers';
 import { usePanAndZoom } from './hooks/usePanAndZoom';
 import { useConfirmation } from './hooks/useConfirmation';
 
@@ -462,18 +462,32 @@ const App: React.FC = () => {
     const handleSavePartAsStatic = () => {
         if (!activePart) return;
         
+        // Auto-correct naming convention before saving
+        const baseName = getPartBaseName(activePart.name);
+        const correctedName = generatePartNameFromProfile(
+            baseName, 
+            activePart.profile, 
+            activePart.faceWidth, 
+            activePart.faceHeight
+        );
+
+        const partToSave = {
+            ...activePart,
+            name: correctedName
+        };
+
         setParts(prev => {
-            const idx = prev.findIndex(p => p.id === activePart.id);
+            const idx = prev.findIndex(p => p.id === partToSave.id);
             if (idx > -1) {
                 const copy = [...prev];
-                copy[idx] = activePart;
+                copy[idx] = partToSave;
                 return copy;
             }
-            return [...prev, activePart];
+            return [...prev, partToSave];
         });
         
         setActivePart(null);
-        addToast("Деталь сохранена в список для раскроя", "success");
+        addToast(`Деталь "${correctedName}" сохранена`, "success");
     };
 
     const handleSaveScript = (script: ParametricScript) => {
@@ -497,6 +511,40 @@ const App: React.FC = () => {
         setParts(prev => [...prev, part]);
         addToast(`Деталь "${part.name}" добавлена к списку для раскроя`, "success");
     }
+
+    // Batch processing from Excel
+    const handleBatchProcess = (newLibraryParts: Part[], newScheduledParts: ScheduledPart[]) => {
+        // 1. Add new generated parts to library (if distinct)
+        if (newLibraryParts.length > 0) {
+            setParts(prev => [...prev, ...newLibraryParts]);
+        }
+
+        // 2. Add scheduled parts to active nest
+        if (newScheduledParts.length > 0) {
+            setNests(prevNests => prevNests.map(nest => {
+                if (nest.id === activeNestId) {
+                    // Merge logic: if part already scheduled, increase quantity? 
+                    // Or just append. Let's append for now to keep it simple, 
+                    // but better to merge if ID matches.
+                    const mergedSchedule = [...nest.scheduledParts];
+                    
+                    newScheduledParts.forEach(np => {
+                        const existing = mergedSchedule.find(ex => ex.partId === np.partId);
+                        if (existing) {
+                            existing.quantity += np.quantity;
+                        } else {
+                            mergedSchedule.push(np);
+                        }
+                    });
+                    
+                    return { ...nest, scheduledParts: mergedSchedule };
+                }
+                return nest;
+            }));
+        }
+
+        addToast(`Пакетная обработка завершена. Добавлено ${newScheduledParts.reduce((acc,p)=>acc+p.quantity,0)} деталей.`, "success");
+    };
 
     const handleLoadPart = (part: Part) => {
         setActivePart(part);
@@ -677,9 +725,11 @@ const App: React.FC = () => {
                 <ScriptLibraryView 
                     scripts={scripts}
                     tools={tools}
+                    parts={parts}
                     onSaveScript={handleSaveScript}
                     onDeleteScript={handleDeleteScript}
                     onCreatePart={handleCreatePartFromScript}
+                    onBatchProcess={handleBatchProcess}
                 />
             );
         }

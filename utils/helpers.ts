@@ -1,4 +1,5 @@
-import { PunchType, Tool, ToolShape } from '../types';
+
+import { PunchType, Tool, ToolShape, PartProfile } from '../types';
 
 export const generateId = (): string => `id_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
@@ -26,4 +27,75 @@ export const findBestContourTool = (tools: Tool[], preference: number): Tool | n
 
     scoredTools.sort((a, b) => b.score - a.score);
     return scoredTools[0].tool;
+};
+
+/**
+ * Extracts the base name of a part by removing the dimension suffix if present.
+ * Suffix pattern: _100x200 or _50x100x50 etc.
+ */
+export const getPartBaseName = (currentName: string): string => {
+    // Regex looks for underscore followed by digits joined by 'x' at the end of the string
+    // e.g. "Box_100x200", "Profile_50x100x50"
+    return currentName.replace(/_(\d+x?)+$/, '');
+};
+
+/**
+ * Generates a standard part name based on profile and dimensions.
+ * Format: BaseName_hTop x hCenter x hBottom x wLeft x wCenter x wRight
+ * Only non-zero dimensions are included.
+ */
+export const generatePartNameFromProfile = (
+    baseName: string, 
+    profile: PartProfile | undefined, 
+    width: number, 
+    height: number
+): string => {
+    let hTop = 0, hCenter = 0, hBottom = 0;
+    let wLeft = 0, wCenter = 0, wRight = 0;
+
+    const type = profile?.type || 'flat';
+    const orientation = profile?.orientation || 'vertical';
+    const dims = profile?.dims || { a: 0, b: 0, c: 0 };
+
+    if (type === 'L') {
+        if (orientation === 'vertical') {
+            wLeft = dims.a;
+            wRight = dims.b;
+            hCenter = height;
+        } else {
+            hTop = dims.a;
+            hBottom = dims.b;
+            wCenter = width;
+        }
+    } else if (type === 'U') {
+        if (orientation === 'vertical') {
+            wLeft = dims.a;
+            wCenter = dims.b;
+            wRight = dims.c;
+            hCenter = height;
+        } else {
+            hTop = dims.a;
+            hCenter = dims.b;
+            hBottom = dims.c;
+            wCenter = width;
+        }
+    } else {
+        // Flat
+        hCenter = height;
+        wCenter = width;
+    }
+
+    // Order: hTop, hCenter, hBottom, wLeft, wCenter, wRight
+    const values = [hTop, hCenter, hBottom, wLeft, wCenter, wRight];
+    
+    // Filter non-zero values, round them
+    const dimStr = values
+        .filter(v => v > 0)
+        .map(v => Math.round(v))
+        .join('x');
+    
+    // Fallback if something went wrong (e.g. 0 sizes)
+    const finalSuffix = dimStr || `${Math.round(height)}x${Math.round(width)}`;
+
+    return `${baseName}_${finalSuffix}`;
 };
