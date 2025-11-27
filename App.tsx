@@ -637,10 +637,43 @@ const App: React.FC = () => {
         
         const updatedSheet = {
              ...currentNestSheet,
-             placedParts: currentNestSheet.placedParts.map(pp => 
-                 pp.id === partId ? { ...pp, rotation: (pp.rotation + 90) % 360 } : pp
-             )
+             placedParts: currentNestSheet.placedParts.map(pp => {
+                 if (pp.id === partId) {
+                     const part = parts.find(p => p.id === pp.partId);
+                     if (!part) return pp;
+
+                     const w = part.geometry.width;
+                     const h = part.geometry.height;
+                     
+                     const oldRotRad = (pp.rotation * Math.PI) / 180;
+                     const newRotDeg = (pp.rotation + 90) % 360;
+                     const newRotRad = (newRotDeg * Math.PI) / 180;
+
+                     // Calculate center relative to anchor (0,0)
+                     // Standard rotation matrix: x' = x*cos - y*sin, y' = x*sin + y*cos
+                     // Local Center is at (w/2, h/2)
+                     
+                     const cxOld = (w / 2) * Math.cos(oldRotRad) - (h / 2) * Math.sin(oldRotRad);
+                     const cyOld = (w / 2) * Math.sin(oldRotRad) + (h / 2) * Math.cos(oldRotRad);
+
+                     const cxNew = (w / 2) * Math.cos(newRotRad) - (h / 2) * Math.sin(newRotRad);
+                     const cyNew = (w / 2) * Math.sin(newRotRad) + (h / 2) * Math.cos(newRotRad);
+
+                     return { 
+                         ...pp, 
+                         rotation: newRotDeg,
+                         // Shift anchor so the center remains in the same world position
+                         // WorldCenter = OldAnchor + OldCenterVector
+                         // NewAnchor = WorldCenter - NewCenterVector
+                         // NewAnchor = OldAnchor + OldCenterVector - NewCenterVector
+                         x: pp.x + (cxOld - cxNew),
+                         y: pp.y + (cyOld - cyNew)
+                     };
+                 }
+                 return pp;
+             })
         };
+        
         const updatedSheets = [...activeNest.sheets];
         updatedSheets[activeSheetIndex] = updatedSheet;
 

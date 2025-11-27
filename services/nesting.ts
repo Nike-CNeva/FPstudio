@@ -177,8 +177,20 @@ export const performNesting = (
                 const w = rot === 0 ? originalW : originalH;
                 const h = rot === 0 ? originalH : originalW;
                 
-                const ox = rot === 0 ? physicalExtents.offsetX : physicalExtents.offsetY;
-                const oy = rot === 0 ? physicalExtents.offsetY : physicalExtents.offsetX;
+                // Correctly calculate offset for rotated bounding box
+                let ox = 0;
+                let oy = 0;
+                if (rot === 0) {
+                    ox = physicalExtents.offsetX;
+                    oy = physicalExtents.offsetY;
+                } else {
+                    // Rot 90 (Clockwise in SVG space)
+                    // Physical Box rotates. Top-Left of physical box relative to Part Origin changes.
+                    // OriginX = WorldX + Height - physicalExtents.offsetY
+                    // OriginY = WorldY + physicalExtents.offsetX
+                    ox = originalH - physicalExtents.offsetY;
+                    oy = physicalExtents.offsetX;
+                }
 
                 if (simX + w <= packWidth && simY + h <= packHeight) {
                      if (!bestFit.found || h < bestFit.height) { 
@@ -202,8 +214,16 @@ export const performNesting = (
                     for (const rot of orientations) {
                         const w = rot === 0 ? originalW : originalH;
                         const h = rot === 0 ? originalH : originalW;
-                        const ox = rot === 0 ? physicalExtents.offsetX : physicalExtents.offsetY;
-                        const oy = rot === 0 ? physicalExtents.offsetY : physicalExtents.offsetX;
+                        
+                        let ox = 0;
+                        let oy = 0;
+                        if (rot === 0) {
+                            ox = physicalExtents.offsetX;
+                            oy = physicalExtents.offsetY;
+                        } else {
+                            ox = originalH - physicalExtents.offsetY;
+                            oy = physicalExtents.offsetX;
+                        }
 
                         if (tempSimX + w <= packWidth && tempSimY + h <= packHeight) {
                             if (!bestFit.found || h < bestFit.height) {
