@@ -326,10 +326,22 @@ export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ scripts, t
 
                                     <div className="flex-1 bg-gray-900 border-2 border-dashed border-gray-600 rounded flex items-center justify-center relative overflow-hidden">
                                         {previewError ? <pre className="text-red-400 text-xs p-4">{previewError}</pre> : previewPart && (
-                                            <svg viewBox={`-10 -10 ${previewPart.geometry.width + 20} ${previewPart.geometry.height + 20}`} className="w-full h-full" preserveAspectRatio="xMidYMid meet">
-                                                <rect x="0" y="0" width={previewPart.geometry.width} height={previewPart.geometry.height} fill="#2d3748" stroke="#4a5568" strokeWidth="1"/>
-                                                <path d={previewPart.geometry.path} fill="none" stroke="#63b3ed" strokeWidth="2" vectorEffect="non-scaling-stroke" />
-                                                {previewPart.punches.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="2" fill="yellow" opacity="0.8" />)}
+                                            <svg viewBox={`-10 ${-(previewPart.geometry.height + 10)} ${previewPart.geometry.width + 20} ${previewPart.geometry.height + 20}`} className="w-full h-full" preserveAspectRatio="xMidYMid meet">
+                                                <defs>
+                                                    <pattern id="smallGridPreview" width="10" height="10" patternUnits="userSpaceOnUse">
+                                                        <path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(255, 255, 255, 0.05)" strokeWidth="0.5"/>
+                                                    </pattern>
+                                                    <pattern id="gridPreview" width="100" height="100" patternUnits="userSpaceOnUse">
+                                                        <rect width="100" height="100" fill="url(#smallGridPreview)"/>
+                                                        <path d="M 100 0 L 0 0 0 100" fill="none" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="1"/>
+                                                    </pattern>
+                                                </defs>
+                                                <rect x="-5000" y="-5000" width="10000" height="10000" fill="url(#gridPreview)" />
+                                                <g transform="scale(1, -1)">
+                                                    <rect x="0" y="0" width={previewPart.geometry.width} height={previewPart.geometry.height} fill="#2d3748" stroke="#4a5568" strokeWidth="1"/>
+                                                    <path d={previewPart.geometry.path} fill="none" stroke="#63b3ed" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+                                                    {previewPart.punches.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="2" fill="yellow" opacity="0.8" />)}
+                                                </g>
                                             </svg>
                                         )}
                                     </div>

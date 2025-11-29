@@ -20,10 +20,10 @@ export const generateParametricScript = (part: Part, tools: Tool[]): string => {
         return parseFloat(s).toString();
     };
 
-    // Normalization helper (DXF Raw -> SVG/Script coords)
+    // Normalization helper (DXF Raw -> Script coords). Preserve Y-Up.
     const normalize = (p: Point): Point => ({
         x: p.x - bbox.minX,
-        y: GeomH - (p.y - bbox.minY)
+        y: p.y - bbox.minY
     });
 
     // --- Correction Calculation (Bend Allowances) ---

@@ -208,14 +208,21 @@ export interface SheetStock {
     id: string;
     width: number;
     height: number;
-    quantity: number;
+    quantity: number; // "Reserved" count
     material: string;
     thickness: number;
+    cost: number;
+}
+
+export enum SheetUtilizationStrategy {
+    ListedOrder = 'listed-order',
+    Smallest = 'smallest',
+    BestFit = 'best-fit'
 }
 
 export interface NestingSettings {
   availableSheets: SheetStock[];
-  activeSheetId: string | null;
+  activeSheetId: string | null; // Currently selected for editing or primary use
   
   // General Params
   partSpacingX: number;
@@ -228,6 +235,9 @@ export interface NestingSettings {
   clampPositions: number[];
   nestUnderClamps: boolean;
   
+  // Strategy
+  utilizationStrategy: SheetUtilizationStrategy;
+
   // Optimization
   useCommonLine: boolean;
   vertexSnapping: boolean; // Auto alignment
@@ -247,6 +257,7 @@ export interface NestResultSheet {
     width: number;
     height: number;
     material: string;
+    thickness: number;
     placedParts: PlacedPart[];
     usedArea: number; // Percentage 0-100
     scrapPercentage: number;
@@ -257,6 +268,8 @@ export interface NestResultSheet {
 export interface NestLayout {
   id: string;
   name: string;
+  customer?: string;
+  workOrder?: string;
   settings: NestingSettings;
   sheets: NestResultSheet[]; // Multiple resulting sheets
   scheduledParts: ScheduledPart[];
@@ -264,11 +277,12 @@ export interface NestLayout {
 
 export enum AppMode {
   PartEditor = 'part-editor',
-  PartLibrary = 'part-library', // Added this mode
+  PartLibrary = 'part-library', 
   ScriptLibrary = 'script-library', 
   Nesting = 'nesting',
   ToolLibrary = 'tool-library',
   TurretSetup = 'turret-setup',
+  MachineSetup = 'machine-setup', // New mode for Machine Params
 }
 
 // Manual Punching
@@ -349,6 +363,40 @@ export interface AutoPunchSettings {
     microJointType: 'vertical' | 'horizontal' | 'all'; // New requirement
     microJointLength: number; // "Micro-joint length"
     microJointDistance: number; // "Maximum micro-joint distance"
+}
+
+// --- MACHINE & OPTIMIZER SETTINGS ---
+
+export interface MachineSettings {
+    name: string;
+    // Travel Limits
+    xTravelMax: number;
+    xTravelMin: number;
+    yTravelMax: number;
+    yTravelMin: number;
+    
+    // Clamp Protection
+    clampProtectionZoneX: number;
+    clampProtectionZoneY: number;
+    deadZoneY: number; // e.g. -40mm from clamps
+
+    // Speeds (Informational for generic G-code, but used for Time estimation)
+    maxSlewSpeed: number; // m/min
+    turretRotationSpeed: number; // RPM
+}
+
+export interface OptimizerSettings {
+    toolSequence: 'station-order' | 'tool-size-desc' | 'tool-size-asc';
+    pathOptimization: 'shortest-path' | 'x-band' | 'y-band';
+    startCorner: 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right';
+    
+    // Optimizations
+    enableCommonLineCuts: boolean;
+    prioritizeContourTools: boolean;
+    sheetUnloadMode: 'manual' | 'automatic';
+    
+    // G-Code Options
+    useG76LinearPatterns: boolean; // Use G76 for lines
 }
 
 export interface LinearPunchSettings {

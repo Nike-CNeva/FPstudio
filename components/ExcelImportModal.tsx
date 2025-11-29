@@ -137,13 +137,13 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({ onClose, scr
                     }
 
                     // Naming convention based on used specific dimensions
-                    // Order: hTop, hCenter, hBottom, wLeft, wCenter, wRight
-                    const usedDims = [hTop, hCenter, hBottom, wLeft, wCenter, wRight];
+                    // Order: wLeft, wCenter, wRight, hTop, hCenter, hBottom (Width x Height)
+                    const usedDims = [wLeft, wCenter, wRight, hTop, hCenter, hBottom];
                     // Filter non-zero values, round them, join with 'x'
                     const dimStr = usedDims.filter(d => d > 0).map(d => Math.round(d)).join('x');
                     
-                    // Fallback to Total Height x Width if no specific dimensions found (e.g. only 'width'/'height' cols used)
-                    const dimsPart = dimStr || `${Math.round(finalH)}x${Math.round(finalW)}`;
+                    // Fallback to Total Width x Height
+                    const dimsPart = dimStr || `${Math.round(finalW)}x${Math.round(finalH)}`;
                     
                     const partName = `${script.name}_${dimsPart}`;
                     

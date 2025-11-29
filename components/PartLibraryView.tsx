@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import { Part, Tool, PartProfile } from '../types';
 import { TrashIcon, BoxIcon, PlayIcon } from './Icons';
@@ -140,15 +141,28 @@ export const PartLibraryView: React.FC<PartLibraryViewProps> = ({ parts, onLoadP
                                     {/* Preview Area */}
                                 <div className="flex-1 bg-gray-900 border-2 border-dashed border-gray-700 rounded-lg flex items-center justify-center p-8 min-h-[300px] relative overflow-hidden mb-6">
                                     <svg 
-                                        viewBox={`0 0 ${selectedPart.geometry.width} ${selectedPart.geometry.height}`} 
+                                        viewBox={`0 ${-selectedPart.geometry.height} ${selectedPart.geometry.width} ${selectedPart.geometry.height}`}
                                         className="w-full h-full max-w-full max-h-full drop-shadow-xl"
                                         preserveAspectRatio="xMidYMid meet"
                                     >
-                                        <rect width="100%" height="100%" fill="none" /> 
-                                        <path d={selectedPart.geometry.path} fill="#2d3748" stroke="#63b3ed" strokeWidth="1" vectorEffect="non-scaling-stroke" />
-                                        {selectedPart.punches.map((p, i) => (
-                                            <circle key={i} cx={p.x} cy={p.y} r="2" fill="yellow" opacity="0.8" vectorEffect="non-scaling-stroke" />
-                                        ))}
+                                        <defs>
+                                            <pattern id="smallGridPreview" width="10" height="10" patternUnits="userSpaceOnUse">
+                                                <path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(255, 255, 255, 0.05)" strokeWidth="0.5"/>
+                                            </pattern>
+                                            <pattern id="gridPreview" width="100" height="100" patternUnits="userSpaceOnUse">
+                                                <rect width="100" height="100" fill="url(#smallGridPreview)"/>
+                                                <path d="M 100 0 L 0 0 0 100" fill="none" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="1"/>
+                                            </pattern>
+                                        </defs>
+                                        {/* Background Grid handles its own tiling, no flip needed for it specifically if it fills rect */}
+                                        <rect x="-5000" y="-5000" width="10000" height="10000" fill="url(#gridPreview)" /> 
+                                        
+                                        <g transform="scale(1, -1)">
+                                            <path d={selectedPart.geometry.path} fill="#2d3748" stroke="#63b3ed" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+                                            {selectedPart.punches.map((p, i) => (
+                                                <circle key={i} cx={p.x} cy={p.y} r="2" fill="yellow" opacity="0.8" vectorEffect="non-scaling-stroke" />
+                                            ))}
+                                        </g>
                                     </svg>
                                     <div className="absolute bottom-4 right-4 bg-gray-800/80 px-2 py-1 rounded text-xs text-gray-300 pointer-events-none">
                                         Геометрия (DXF)

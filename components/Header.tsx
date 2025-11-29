@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { AppMode } from '../types';
-import { BoxIcon, CodeIcon, GridIcon, LayersIcon, TurretIcon, FolderIcon } from './Icons';
+import { BoxIcon, CodeIcon, GridIcon, LayersIcon, TurretIcon, FolderIcon, SettingsIcon } from './Icons';
 import { NavButton } from './common/Button';
 
 interface HeaderProps {
@@ -25,6 +25,13 @@ export const Header: React.FC<HeaderProps> = ({ mode, setMode, onGenerateGCode, 
             </nav>
         </div>
         <div className="flex items-center space-x-3">
+             <button 
+                onClick={() => setMode(AppMode.MachineSetup)}
+                className={`p-2 rounded hover:bg-gray-700 transition-colors ${mode === AppMode.MachineSetup ? 'text-blue-400 bg-gray-800' : 'text-gray-400'}`}
+                title="Параметры станка"
+             >
+                 <SettingsIcon className="w-6 h-6" />
+             </button>
              <button onClick={onGenerateGCode} className="flex items-center space-x-2 bg-green-600 hover:bg-green-700 px-4 py-2 rounded-md text-sm font-semibold transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed" disabled={mode !== AppMode.Nesting}>
                 <CodeIcon className="w-5 h-5"/>
                 <span>Постпроцессор</span>

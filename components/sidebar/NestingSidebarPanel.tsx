@@ -1,19 +1,20 @@
-
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { NestLayout, ScheduledPart, Part, SheetStock, NestingConstraints } from '../../types';
 import { ModalInputField } from '../common/InputField';
 import { SidebarTabButton } from '../common/Button';
-import { PlusIcon, TrashIcon } from '../Icons';
+import { PlusIcon, TrashIcon, SaveIcon, DownloadIcon } from '../Icons';
 import { generateId } from '../../utils/helpers';
 
 interface NestingSidebarPanelProps {
     activeNest: NestLayout;
     allParts: Part[];
     onSettingsChange: (settings: NestLayout['settings'], scheduledParts: ScheduledPart[]) => void;
+    onMetadataChange?: (metadata: { customer?: string, workOrder?: string }) => void;
 }
 
-export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ activeNest, allParts, onSettingsChange }) => {
+export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ activeNest, allParts, onSettingsChange, onMetadataChange }) => {
     const [activeTab, setActiveTab] = useState<'parts' | 'params' | 'sheet'>('parts');
+    const fileInputRef = useRef<HTMLInputElement>(null);
     
     const settings = activeNest.settings;
     const scheduledParts = activeNest.scheduledParts;
@@ -58,7 +59,7 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
 
     // --- SHEET LOGIC ---
     const addSheet = () => {
-        const newSheet: SheetStock = { id: generateId(), width: 2500, height: 1250, thickness: 1.0, material: 'St-3', quantity: 10 };
+        const newSheet: SheetStock = { id: generateId(), width: 2500, height: 1250, thickness: 1.0, material: 'St-3', quantity: 10, cost: 0 };
         updateSettings({ availableSheets: [...settings.availableSheets, newSheet] });
     };
     const updateSheet = (id: string, field: keyof SheetStock, val: any) => {
@@ -70,16 +71,71 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
          updateSettings({ availableSheets: newSheets, activeSheetId: newActiveId });
     };
 
+    // --- SAVE / LOAD PROJECT ---
+    const handleSaveProject = () => {
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(activeNest));
+        const downloadAnchorNode = document.createElement('a');
+        downloadAnchorNode.setAttribute("href", dataStr);
+        downloadAnchorNode.setAttribute("download", `nest_project_${activeNest.workOrder || 'draft'}.json`);
+        document.body.appendChild(downloadAnchorNode);
+        downloadAnchorNode.click();
+        downloadAnchorNode.remove();
+    };
+
+    const handleLoadProject = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const json = JSON.parse(e.target?.result as string);
+                window.dispatchEvent(new CustomEvent('fp-load-nest', { detail: json }));
+            } catch (err) {
+                alert("Invalid project file");
+            }
+        };
+        reader.readAsText(file);
+        event.target.value = '';
+    };
 
     return (
         <div className="flex flex-col h-full">
-            <div className="flex border-b border-gray-600 mb-2 text-xs">
+            {/* Metadata Section */}
+            <div className="p-3 bg-gray-800 border-b border-gray-600 space-y-2">
+                <div className="flex space-x-2">
+                    <input 
+                        type="text" 
+                        placeholder="Заказчик" 
+                        className="w-1/2 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+                        value={activeNest.customer || ''}
+                        onChange={(e) => onMetadataChange && onMetadataChange({ customer: e.target.value })}
+                    />
+                    <input 
+                        type="text" 
+                        placeholder="№ Заказа" 
+                        className="w-1/2 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+                        value={activeNest.workOrder || ''}
+                        onChange={(e) => onMetadataChange && onMetadataChange({ workOrder: e.target.value })}
+                    />
+                </div>
+                <div className="flex space-x-2">
+                    <button onClick={handleSaveProject} className="flex-1 bg-green-700 hover:bg-green-600 text-white text-xs py-1 rounded flex items-center justify-center space-x-1">
+                        <SaveIcon className="w-3 h-3"/> <span>Сохранить</span>
+                    </button>
+                    <button onClick={() => fileInputRef.current?.click()} className="flex-1 bg-blue-700 hover:bg-blue-600 text-white text-xs py-1 rounded flex items-center justify-center space-x-1">
+                        <DownloadIcon className="w-3 h-3 rotate-180"/> <span>Загрузить</span>
+                    </button>
+                    <input type="file" ref={fileInputRef} onChange={handleLoadProject} accept=".json" className="hidden" />
+                </div>
+            </div>
+
+            <div className="flex border-b border-gray-600 mb-2 text-xs bg-gray-700 pt-1">
                 <SidebarTabButton label="Детали" active={activeTab === 'parts'} onClick={() => setActiveTab('parts')} />
                 <SidebarTabButton label="Параметры" active={activeTab === 'params'} onClick={() => setActiveTab('params')} />
                 <SidebarTabButton label="Лист" active={activeTab === 'sheet'} onClick={() => setActiveTab('sheet')} />
             </div>
 
-            <div className="flex-1 overflow-y-auto pr-1 space-y-4">
+            <div className="flex-1 overflow-y-auto pr-1 space-y-4 p-2">
                 
                 {/* --- PARTS TAB --- */}
                 {activeTab === 'parts' && (
@@ -114,7 +170,6 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
                                             <div className="grid grid-cols-3 gap-1 text-[10px] text-gray-400">
                                                 <label><input type="checkbox" checked={sp.nesting.allow0_180} onChange={e => updatePartNesting(sp.partId, 'allow0_180', e.target.checked)} /> 0/180</label>
                                                 <label><input type="checkbox" checked={sp.nesting.allow90_270} onChange={e => updatePartNesting(sp.partId, 'allow90_270', e.target.checked)} /> 90/270</label>
-                                                {/* <label><input type="checkbox" checked={sp.nesting.commonLine} onChange={e => updatePartNesting(sp.partId, 'commonLine', e.target.checked)} /> Common</label> */}
                                             </div>
                                         </div>
                                     )
@@ -178,34 +233,81 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
 
                 {/* --- SHEET TAB --- */}
                 {activeTab === 'sheet' && (
-                    <div className="space-y-2">
+                    <div className="space-y-4">
                         <div className="flex justify-between items-center mb-1">
                             <span className="text-xs font-bold text-gray-400">Список Листов</span>
                             <button onClick={addSheet} className="text-[10px] bg-blue-600 px-2 py-0.5 rounded text-white">Добавить</button>
                         </div>
-                        {settings.availableSheets.map(sheet => (
-                            <div key={sheet.id} className={`p-2 rounded border text-xs space-y-1 ${settings.activeSheetId === sheet.id ? 'bg-blue-900/30 border-blue-500' : 'bg-gray-800 border-gray-600'}`}>
-                                <div className="flex justify-between">
-                                    <label className="flex items-center space-x-2">
-                                        <input type="radio" checked={settings.activeSheetId === sheet.id} onChange={() => updateSettings({activeSheetId: sheet.id})} />
-                                        <span className="font-bold text-gray-300">Размер {sheet.width}x{sheet.height}</span>
-                                    </label>
-                                    <button onClick={() => removeSheet(sheet.id)} className="text-red-500"><TrashIcon className="w-3 h-3"/></button>
+                        {settings.availableSheets.map((sheet, idx) => (
+                            <div key={sheet.id} className={`p-2 rounded border text-xs space-y-2 ${settings.activeSheetId === sheet.id ? 'bg-blue-900/20 border-blue-500' : 'bg-gray-800 border-gray-600'}`}>
+                                <div className="flex justify-between items-start">
+                                    <div className="flex-1">
+                                        <label className="block text-[10px] text-gray-500 font-bold mb-0.5">Материал / ID</label>
+                                        <input 
+                                            type="text" 
+                                            value={sheet.material} 
+                                            onChange={e => updateSheet(sheet.id, 'material', e.target.value)} 
+                                            className="w-full bg-gray-900 border border-gray-600 px-1 py-0.5 rounded text-white" 
+                                            placeholder="Напр. St-3"
+                                        />
+                                    </div>
+                                    <button onClick={() => removeSheet(sheet.id)} className="text-red-500 ml-2 mt-4 hover:bg-gray-700 p-1 rounded"><TrashIcon className="w-4 h-4"/></button>
                                 </div>
-                                <div className="grid grid-cols-2 gap-1">
-                                    <input type="number" value={sheet.width} onChange={e => updateSheet(sheet.id, 'width', parseFloat(e.target.value)||0)} className="bg-gray-900 border border-gray-600 px-1 rounded" placeholder="Ширина" />
-                                    <input type="number" value={sheet.height} onChange={e => updateSheet(sheet.id, 'height', parseFloat(e.target.value)||0)} className="bg-gray-900 border border-gray-600 px-1 rounded" placeholder="Высота" />
+                                
+                                <div className="grid grid-cols-2 gap-2">
+                                    <div>
+                                        <label className="block text-[10px] text-gray-500 mb-0.5">Ширина (X)</label>
+                                        <input 
+                                            type="number" 
+                                            value={sheet.width} 
+                                            onChange={e => updateSheet(sheet.id, 'width', parseFloat(e.target.value)||0)} 
+                                            className="w-full bg-gray-900 border border-gray-600 px-1 py-0.5 rounded text-white" 
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] text-gray-500 mb-0.5">Высота (Y)</label>
+                                        <input 
+                                            type="number" 
+                                            value={sheet.height} 
+                                            onChange={e => updateSheet(sheet.id, 'height', parseFloat(e.target.value)||0)} 
+                                            className="w-full bg-gray-900 border border-gray-600 px-1 py-0.5 rounded text-white" 
+                                        />
+                                    </div>
                                 </div>
-                                <div className="grid grid-cols-2 gap-1">
-                                    <input type="number" value={sheet.thickness} onChange={e => updateSheet(sheet.id, 'thickness', parseFloat(e.target.value)||0)} className="bg-gray-900 border border-gray-600 px-1 rounded" placeholder="Толщина" />
-                                    <input type="number" value={sheet.quantity} onChange={e => updateSheet(sheet.id, 'quantity', parseFloat(e.target.value)||0)} className="bg-gray-900 border border-gray-600 px-1 rounded" placeholder="Кол-во" />
+
+                                <div className="grid grid-cols-2 gap-2">
+                                    <div>
+                                        <label className="block text-[10px] text-gray-500 mb-0.5">Толщина</label>
+                                        <input 
+                                            type="number" 
+                                            value={sheet.thickness} 
+                                            onChange={e => updateSheet(sheet.id, 'thickness', parseFloat(e.target.value)||0)} 
+                                            className="w-full bg-gray-900 border border-gray-600 px-1 py-0.5 rounded text-white" 
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-[10px] text-gray-500 mb-0.5">Кол-во</label>
+                                        <input 
+                                            type="number" 
+                                            value={sheet.quantity} 
+                                            onChange={e => updateSheet(sheet.id, 'quantity', parseFloat(e.target.value)||0)} 
+                                            className="w-full bg-gray-900 border border-gray-600 px-1 py-0.5 rounded text-white" 
+                                        />
+                                    </div>
                                 </div>
-                                <div className="flex space-x-1 items-center">
-                                    <span>Мат:</span>
-                                    <input type="text" value={sheet.material} onChange={e => updateSheet(sheet.id, 'material', e.target.value)} className="bg-gray-900 border border-gray-600 px-1 rounded flex-1" />
-                                </div>
+
+                                <label className="flex items-center space-x-2 pt-1 cursor-pointer">
+                                    <input 
+                                        type="radio" 
+                                        checked={settings.activeSheetId === sheet.id} 
+                                        onChange={() => updateSettings({activeSheetId: sheet.id})} 
+                                        className="text-blue-500 form-radio h-3 w-3"
+                                    />
+                                    <span className={`font-bold ${settings.activeSheetId === sheet.id ? 'text-blue-400' : 'text-gray-400'}`}>Использовать этот лист</span>
+                                </label>
                             </div>
                         ))}
+                        {settings.availableSheets.length === 0 && <p className="text-gray-500 text-center text-xs">Нет листов</p>}
                     </div>
                 )}
 

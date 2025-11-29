@@ -1,4 +1,3 @@
-
 import React, { ChangeEvent, useRef } from 'react';
 import { AppMode, NestLayout, Part, Tool, ManualPunchMode, PlacementReference, SnapMode, NibbleSettings, DestructSettings, PlacedTool, PlacementSide, TeachCycle, ScheduledPart } from '../../types';
 import { FolderIcon, SaveIcon, PlusIcon, TrashIcon, PlayIcon, SettingsIcon, CodeIcon } from './Icons';
@@ -46,8 +45,9 @@ interface SidebarProps {
     punchOffset: number;
     setPunchOffset: (offset: number) => void;
     
-    // Nesting Settings Prop - Replaces onOpenNestingSettings
+    // Nesting Settings Prop
     onUpdateNestingSettings?: (settings: NestLayout['settings'], scheduledParts: ScheduledPart[]) => void;
+    onUpdateNestMetadata?: (metadata: { customer?: string, workOrder?: string }) => void;
     
     nibbleSettings: NibbleSettings;
     setNibbleSettings: (settings: NibbleSettings) => void;
@@ -79,7 +79,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     selectedPunchId, setSelectedPunchId, onDeletePunch, onUpdatePunch, 
     placementReference, setPlacementReference, placementSide, setPlacementSide, punchOrientation, setPunchOrientation, onCyclePunchOrientation,
     snapMode, setSnapMode, punchOffset, setPunchOffset, 
-    onUpdateNestingSettings,
+    onUpdateNestingSettings, onUpdateNestMetadata,
     nibbleSettings, setNibbleSettings, destructSettings, setDestructSettings,
     onSavePartAsScript, onSavePartAsStatic, onUpdateActivePart, onClosePart,
     teachMode, setTeachMode, onSaveTeachCycle, teachCycles, onDeleteTeachCycle,
@@ -235,7 +235,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             <NestingSidebarPanel 
                                 activeNest={activeNest} 
                                 allParts={parts} 
-                                onSettingsChange={onUpdateNestingSettings} 
+                                onSettingsChange={onUpdateNestingSettings}
+                                onMetadataChange={onUpdateNestMetadata}
                             />
                         )}
                     </div>

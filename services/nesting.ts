@@ -34,9 +34,26 @@ const getCommonLineGap = (parts: ScheduledPart[], allParts: Part[], tools: Tool[
     return -minDimension;
 };
 
+interface ItemToPlace {
+    part: Part;
+    instanceId: string;
+    nesting: NestingConstraints;
+    // Pre-calculated dimensions
+    phys0: { width: number, height: number, offsetX: number, offsetY: number }; // Rotation 0
+    phys90: { width: number, height: number, offsetX: number, offsetY: number }; // Rotation 90
+}
+
+interface NestingRow {
+    y: number;      // Logical Y position of the row top relative to packing area
+    x: number;      // Current Logical X cursor in this row
+    height: number; // The height allocated for this row (usually determined by the first/tallest item)
+}
+
 /**
- * A greedy nesting algorithm that supports rotation and different start corners/directions.
- * Places parts from a list onto multiple sheets if necessary.
+ * Improved Nesting Algorithm: First Fit Decreasing Height (FFDH) with Rotation Support.
+ * 1. Sort parts by largest dimension descending.
+ * 2. Try to fit part in existing rows (checking valid rotations).
+ * 3. If no fit, start new row.
  */
 export const performNesting = (
     scheduledParts: ScheduledPart[], 
@@ -61,58 +78,47 @@ export const performNesting = (
     }
 
     // Override bottom margin logic based on clamp safety
-    // If "Nest Under Clamps" is OFF (Safety ON), we force an 80mm margin at the bottom.
     const effectiveMarginBottom = nestUnderClamps ? sheetMarginBottom : 80;
 
-    // Flatten the list of parts to place
-    const partsToPlace: { part: Part, instanceId: string, nesting: NestingConstraints }[] = [];
+    // 1. Prepare Items (Flatten and pre-calc bounds)
+    const partsToPlace: ItemToPlace[] = [];
     
     scheduledParts.forEach(({ partId, quantity, nesting }) => {
         const part = allParts.find(p => p.id === partId);
         if (part) {
+            // Calc 0 deg
+            const b0 = calculatePartPhysicalExtents(part, tools);
+            // Calc 90 deg (Swap W/H, adjust offsets logic handled in placement but dims needed here)
+            // Rotation 90 logic: newW = oldH, newH = oldW. 
+            // Offset logic handled dynamically during placement, we just need dimensions here for sorting/fitting.
+            const b90 = { 
+                width: b0.height, 
+                height: b0.width, 
+                offsetX: b0.height - b0.offsetY, // Placeholder, actual logic in loop
+                offsetY: b0.offsetX 
+            };
+
             for(let i=0; i<quantity; i++) {
                 partsToPlace.push({
                     part,
-                    instanceId: `placed_${part.id}_${Date.now()}_${Math.random()}_${i}`,
-                    nesting: nesting
+                    instanceId: `placed_${part.id}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}_${i}`,
+                    nesting,
+                    phys0: b0,
+                    phys90: b90
                 });
             }
         }
     });
 
-    // Sort parts by size (largest dimension first)
+    // 2. Sort by Maximum Dimension Descending (FFDH strategy)
+    // This helps placing large items first to define row structures, then smaller items fill gaps.
     partsToPlace.sort((a, b) => {
-        const areaA = a.part.geometry.width * a.part.geometry.height;
-        const areaB = b.part.geometry.width * b.part.geometry.height;
-        return areaB - areaA;
+        const maxDimA = Math.max(a.phys0.width, a.phys0.height);
+        const maxDimB = Math.max(b.phys0.width, b.phys0.height);
+        return maxDimB - maxDimA;
     });
 
-    const singleSheets: NestResultSheet[] = [];
-    
-    // Helper to calculate clamp collision
-    const isCollidingWithClamps = (x: number, width: number, y: number, height: number, sheetH: number): boolean => {
-        if (nestUnderClamps) return false;
-        
-        const clampBuffer = 50; 
-        const clampDepth = 100; // Clamps take up bottom 100mm
-
-        for (const clampX of clampPositions) {
-            // Check if the part (x to x+width) overlaps with clamp X-range
-            if (x < clampX + clampBuffer && (x + width) > clampX - clampBuffer) {
-                // Check Y - if part is low enough to hit clamps
-                // SVG Y coordinate increases downwards. Clamps are at the "bottom" visually.
-                // In standard coordinate system (Y=0 bottom), clamps are at Y=0.
-                // But here we place in SVG space (Y=0 top).
-                // "Bottom" of sheet is Y = sheetH.
-                // Clamps occupy Y range [sheetH - clampDepth, sheetH].
-                if (y + height > (sheetH - clampDepth)) return true;
-            }
-        }
-        return false;
-    };
-
-    // Determine spacing. 
-    // If Common Line is used, calculate gap based on tool dimensions
+    // Determine effective spacing
     let effectiveSpacingX = partSpacingX;
     let effectiveSpacingY = partSpacingY;
 
@@ -123,175 +129,238 @@ export const performNesting = (
     }
 
     // Nesting Direction Config
+    // 0,1,2 = Bottom aligned. 6,7,8 = Top aligned.
+    // 0,3,6 = Left aligned. 2,5,8 = Right aligned.
+    // We work in "Logical Coordinates" (Top-Left 0,0 to W,H) and map to World at the end.
     const isRightAligned = [2, 5, 8].includes(nestingDirection);
     const isBottomAligned = [0, 1, 2].includes(nestingDirection);
-    
-    // Process loop: Create sheets until all parts placed
+
+    // Helper: Check Clamp Collision
+    const isCollidingWithClamps = (worldX: number, width: number, worldY: number, height: number, sheetH: number): boolean => {
+        if (nestUnderClamps) return false;
+        const clampBuffer = 50; 
+        const clampDepth = 100; 
+        for (const clampX of clampPositions) {
+            // Check X overlap
+            if (worldX < clampX + clampBuffer && (worldX + width) > clampX - clampBuffer) {
+                // Check Y overlap (Clamps are at bottom of sheet in World Y)
+                // In World Coordinates (Y-Up), Clamps are at Y=0.
+                // The dangerous zone is usually Y < clampDepth.
+                if (worldY < clampDepth) return true;
+            }
+        }
+        return false;
+    };
+
+    // Helper: Map Logical (Packing) Coords to World Coords
+    // Logical: (0,0) is the start corner defined by margins.
+    // PackWidth/PackHeight are the safe areas.
+    // OUTPUT: World Coordinates (Y-Up, 0 at Bottom).
+    const getToWorldFn = (sheetW: number, sheetH: number) => {
+        return (logX: number, logY: number, partW: number, partH: number) => {
+            let worldX = 0;
+            let worldY = 0;
+
+            if (isRightAligned) {
+                // Start from Right margin, move left
+                worldX = (sheetW - sheetMarginRight) - (logX + partW);
+            } else {
+                // Start from Left margin, move right
+                worldX = sheetMarginLeft + logX;
+            }
+
+            if (isBottomAligned) {
+                // Start from Bottom margin, move up (World Y increases)
+                worldY = effectiveMarginBottom + logY;
+            } else {
+                // Start from Top margin, move down (World Y decreases from Height)
+                worldY = (sheetH - sheetMarginTop) - (logY + partH);
+            }
+            return { worldX, worldY };
+        };
+    };
+
+    const singleSheets: NestResultSheet[] = [];
     let sheetCount = 0;
     const MAX_SHEETS = 500; 
 
+    // 3. Processing Loop
     while (partsToPlace.length > 0 && sheetCount < MAX_SHEETS) {
         sheetCount++;
         const currentSheetDef = activeSheetDef; 
-        
         const placedOnSheet: NestLayout['sheets'][0]['placedParts'] = [];
-        const packWidth = currentSheetDef.width - sheetMarginLeft - sheetMarginRight;
-        // Use effectiveMarginBottom here
-        const packHeight = currentSheetDef.height - sheetMarginTop - effectiveMarginBottom;
-
-        let simX = 0;
-        let simY = 0;
-        let rowMaxHeight = 0;
-        let rowStartY = simY;
         
+        const packWidth = currentSheetDef.width - sheetMarginLeft - sheetMarginRight;
+        const packHeight = currentSheetDef.height - sheetMarginTop - effectiveMarginBottom;
+        
+        const toWorld = getToWorldFn(currentSheetDef.width, currentSheetDef.height);
+
+        // State for this sheet
+        const rows: NestingRow[] = [];
         const placedIndices: number[] = [];
 
-        // Try to place each remaining part
+        // Attempt to place each remaining part
         for (let i = 0; i < partsToPlace.length; i++) {
             const item = partsToPlace[i];
-            const { part, instanceId, nesting } = item;
-            const { allow0_180, allow90_270 } = nesting;
+            const { phys0, phys90, nesting } = item;
+            
+            // Determine allowed orientations
+            const allowedRotations = [];
+            if (nesting.allow0_180) allowedRotations.push(0);
+            if (nesting.allow90_270) allowedRotations.push(90);
+            if (allowedRotations.length === 0) allowedRotations.push(0); // Fallback
 
-            // Calculate PHYSICAL Extents (including punches sticking out)
-            const physicalExtents = calculatePartPhysicalExtents(part, tools);
-            const originalW = physicalExtents.width;
-            const originalH = physicalExtents.height;
-
-            let bestFit = {
+            let bestPlacement = {
+                rowIdx: -1, // -1 means new row
                 rotation: 0,
                 width: 0,
                 height: 0,
-                offsetX: 0,
-                offsetY: 0,
-                found: false
+                score: Infinity // Lower is better. Score = wasted vertical space in row.
             };
 
-            const orientations = [];
-            if (allow0_180) orientations.push(0);
-            if (allow90_270) orientations.push(90);
-            if (orientations.length === 0) orientations.push(0);
-
-            // 1. Try to fit in current row
-            for (const rot of orientations) {
-                // If rotated 90, Width becomes Height
-                const w = rot === 0 ? originalW : originalH;
-                const h = rot === 0 ? originalH : originalW;
+            // --- Strategy A: Try to fit in EXISTING rows ---
+            for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+                const row = rows[rIdx];
                 
-                // Correctly calculate offset for rotated bounding box
-                let ox = 0;
-                let oy = 0;
-                if (rot === 0) {
-                    ox = physicalExtents.offsetX;
-                    oy = physicalExtents.offsetY;
-                } else {
-                    // Rot 90 (Clockwise in SVG space)
-                    // Physical Box rotates. Top-Left of physical box relative to Part Origin changes.
-                    // OriginX = WorldX + Height - physicalExtents.offsetY
-                    // OriginY = WorldY + physicalExtents.offsetX
-                    ox = originalH - physicalExtents.offsetY;
-                    oy = physicalExtents.offsetX;
-                }
-
-                if (simX + w <= packWidth && simY + h <= packHeight) {
-                     if (!bestFit.found || h < bestFit.height) { 
-                        bestFit = { rotation: rot, width: w, height: h, offsetX: ox, offsetY: oy, found: true };
-                    }
-                }
-            }
-
-            // 2. If not fit in row, try new row
-            let inNewRow = false;
-            let tempSimX = simX;
-            let tempSimY = simY;
-            
-            if (!bestFit.found) {
-                // Advance to new row
-                tempSimX = 0;
-                tempSimY = rowStartY + rowMaxHeight + effectiveSpacingY;
-                
-                // Check if new row fits in sheet
-                if (tempSimY < packHeight) {
-                    for (const rot of orientations) {
-                        const w = rot === 0 ? originalW : originalH;
-                        const h = rot === 0 ? originalH : originalW;
+                for (const rot of allowedRotations) {
+                    const dims = rot === 0 ? phys0 : phys90;
+                    
+                    // Check dimensions
+                    if (dims.height > row.height) continue; // Too tall for this row (Basic FFDH rule: fit in existing height)
+                    
+                    if (row.x + dims.width <= packWidth) {
+                        // Calculate World Coords to check Clamps
+                        const { worldX, worldY } = toWorld(row.x, row.y, dims.width, dims.height);
                         
-                        let ox = 0;
-                        let oy = 0;
-                        if (rot === 0) {
-                            ox = physicalExtents.offsetX;
-                            oy = physicalExtents.offsetY;
-                        } else {
-                            ox = originalH - physicalExtents.offsetY;
-                            oy = physicalExtents.offsetX;
-                        }
-
-                        if (tempSimX + w <= packWidth && tempSimY + h <= packHeight) {
-                            if (!bestFit.found || h < bestFit.height) {
-                                bestFit = { rotation: rot, width: w, height: h, offsetX: ox, offsetY: oy, found: true };
-                                inNewRow = true;
+                        if (!isCollidingWithClamps(worldX, dims.width, worldY, dims.height, currentSheetDef.height)) {
+                            // It fits! Calculate score.
+                            // We want to minimize the gap between part height and row height.
+                            const verticalWaste = row.height - dims.height;
+                            
+                            if (verticalWaste < bestPlacement.score) {
+                                bestPlacement = {
+                                    rowIdx: rIdx,
+                                    rotation: rot,
+                                    width: dims.width,
+                                    height: dims.height,
+                                    score: verticalWaste
+                                };
                             }
                         }
                     }
                 }
             }
 
-            if (bestFit.found) {
-                if (inNewRow) {
-                    simX = 0;
-                    simY = tempSimY;
-                    rowStartY = simY;
-                    rowMaxHeight = 0;
+            // --- Strategy B: Start NEW ROW ---
+            if (bestPlacement.rowIdx === -1) {
+                // Determine Y position for new row
+                let newRowY = 0;
+                if (rows.length > 0) {
+                    const lastRow = rows[rows.length - 1];
+                    newRowY = lastRow.y + lastRow.height + effectiveSpacingY;
                 }
 
-                let worldX = 0;
-                let worldY = 0;
+                if (newRowY < packHeight) {
+                    let bestNewRow = { rotation: -1, width: 0, height: Infinity };
 
-                // X Transformation
-                if (isRightAligned) {
-                    worldX = (currentSheetDef.width - sheetMarginRight) - (simX + bestFit.width);
+                    for (const rot of allowedRotations) {
+                        const dims = rot === 0 ? phys0 : phys90;
+                        
+                        // Check if fits on sheet X and Y
+                        if (dims.width <= packWidth && (newRowY + dims.height) <= packHeight) {
+                             const { worldX, worldY } = toWorld(0, newRowY, dims.width, dims.height);
+                             if (!isCollidingWithClamps(worldX, dims.width, worldY, dims.height, currentSheetDef.height)) {
+                                 if (dims.height < bestNewRow.height) {
+                                     bestNewRow = { rotation: rot, width: dims.width, height: dims.height };
+                                 }
+                             }
+                        }
+                    }
+
+                    if (bestNewRow.rotation !== -1) {
+                        // Found a valid new row config
+                        bestPlacement = {
+                            rowIdx: -2, // New Row signal
+                            rotation: bestNewRow.rotation,
+                            width: bestNewRow.width,
+                            height: bestNewRow.height,
+                            score: 0
+                        };
+                    }
+                }
+            }
+
+            // --- EXECUTE PLACEMENT ---
+            if (bestPlacement.rowIdx !== -1) {
+                let placeX = 0;
+                let placeY = 0;
+                
+                // Offsets logic
+                const rot = bestPlacement.rotation;
+                
+                let finalOffsetX = 0;
+                let finalOffsetY = 0;
+
+                if (rot === 0) {
+                    finalOffsetX = phys0.offsetX;
+                    finalOffsetY = phys0.offsetY;
                 } else {
-                    worldX = sheetMarginLeft + simX;
+                    // 90 deg
+                    finalOffsetX = phys0.height - phys0.offsetY;
+                    finalOffsetY = phys0.offsetX;
                 }
 
-                // Y Transformation
-                if (isBottomAligned) {
-                    // Use effectiveMarginBottom here
-                    worldY = (currentSheetDef.height - effectiveMarginBottom) - (simY + bestFit.height);
+                if (bestPlacement.rowIdx >= 0) {
+                    // Add to existing
+                    const row = rows[bestPlacement.rowIdx];
+                    placeX = row.x;
+                    placeY = row.y; // Align to top of row
+                    
+                    // Update Row
+                    row.x += bestPlacement.width + effectiveSpacingX;
                 } else {
-                    worldY = sheetMarginTop + simY;
+                    // Create New Row
+                    let newRowY = 0;
+                    if (rows.length > 0) {
+                        const lastRow = rows[rows.length - 1];
+                        newRowY = lastRow.y + lastRow.height + effectiveSpacingY;
+                    }
+                    placeX = 0;
+                    placeY = newRowY;
+
+                    rows.push({
+                        y: newRowY,
+                        x: bestPlacement.width + effectiveSpacingX,
+                        height: bestPlacement.height
+                    });
                 }
 
-                const finalPartX = worldX + bestFit.offsetX;
-                const finalPartY = worldY + bestFit.offsetY;
-
-                // Clamp Check (Check physical bbox)
-                if (isCollidingWithClamps(worldX, bestFit.width, worldY, bestFit.height, currentSheetDef.height)) {
-                    continue; 
-                }
+                // Map to World
+                const { worldX, worldY } = toWorld(placeX, placeY, bestPlacement.width, bestPlacement.height);
 
                 placedOnSheet.push({
-                    id: instanceId,
-                    partId: part.id,
-                    x: finalPartX,
-                    y: finalPartY,
-                    rotation: bestFit.rotation,
+                    id: item.instanceId,
+                    partId: item.part.id,
+                    x: worldX + finalOffsetX,
+                    y: worldY + finalOffsetY,
+                    rotation: bestPlacement.rotation
                 });
 
                 placedIndices.push(i);
-
-                if (bestFit.height > rowMaxHeight) {
-                    rowMaxHeight = bestFit.height;
-                }
-                
-                simX += bestFit.width + effectiveSpacingX;
             }
-        } 
+        } // End Parts Loop
 
-        // Remove placed parts
-        placedIndices.sort((a, b) => b - a).forEach(idx => {
-            partsToPlace.splice(idx, 1);
-        });
+        // Remove placed parts from queue
+        const remainingParts: ItemToPlace[] = [];
+        for(let i=0; i<partsToPlace.length; i++) {
+            if (!placedIndices.includes(i)) {
+                remainingParts.push(partsToPlace[i]);
+            }
+        }
+        partsToPlace.length = 0;
+        partsToPlace.push(...remainingParts);
 
+        // Calculate Stats
         const totalArea = currentSheetDef.width * currentSheetDef.height;
         let partsArea = 0;
         placedOnSheet.forEach(pp => {
@@ -301,22 +370,20 @@ export const performNesting = (
         const usedArea = partsArea > 0 ? (partsArea / totalArea) * 100 : 0;
 
         if (placedOnSheet.length === 0) {
-            // Critical Fix: If the sheet is empty and we still have parts to place, 
-            // it means the remaining parts DO NOT FIT on a fresh sheet.
-            // We must stop to prevent infinite looping.
             if (partsToPlace.length > 0) {
-                throw new Error(`Деталь "${partsToPlace[0].part.name}" слишком велика для выбранного листа (с учетом отступов и прижимов).`);
+                throw new Error(`Деталь "${partsToPlace[0].part.name}" слишком велика для листа или заблокирована прижимами.`);
             }
             break; 
         }
 
         singleSheets.push({
             id: generateId(),
-            sheetName: `Layout`, // Placeholder
+            sheetName: `Layout`, 
             stockSheetId: currentSheetDef.id,
             width: currentSheetDef.width,
             height: currentSheetDef.height,
             material: currentSheetDef.material,
+            thickness: currentSheetDef.thickness,
             placedParts: placedOnSheet,
             usedArea: usedArea,
             scrapPercentage: 100 - usedArea,
@@ -325,29 +392,22 @@ export const performNesting = (
         });
     }
 
-    // --- Post-Processing: Compress Identical Layouts ---
+    // 4. Post-Processing: Group Identical Sheets
+    const groupedSheets: NestResultSheet[] = [];
     
-    // Check if two sheets are identical (ignoring ID and instance IDs, checking geometry relative placement)
+    // Simple heuristic for identity
     const isSameLayout = (a: NestResultSheet, b: NestResultSheet): boolean => {
         if (a.placedParts.length !== b.placedParts.length) return false;
         if (a.width !== b.width || a.height !== b.height) return false;
         
-        // Simple heuristic: Sum of X and Y positions should match closely, and part IDs at index should match
-        // Note: nesting is deterministic for the same list order, but since we modify partsToPlace, 
-        // subsequent sheets are generated sequentially.
-        // True compression requires checking if the set of placed parts is effectively same configuration.
-        // Since our greedy Algo fills identically if parts are same, we just check position of first and last part.
-        
         const p1First = a.placedParts[0];
         const p2First = b.placedParts[0];
         
+        // Check first part position and ID match as signature
         if (p1First.partId !== p2First.partId || Math.abs(p1First.x - p2First.x) > 0.1 || Math.abs(p1First.y - p2First.y) > 0.1) return false;
-        
         return true;
     };
 
-    const groupedSheets: NestResultSheet[] = [];
-    
     singleSheets.forEach(sheet => {
         const match = groupedSheets.find(g => isSameLayout(g, sheet));
         if (match) {
@@ -357,7 +417,6 @@ export const performNesting = (
         }
     });
     
-    // Rename sheets
     groupedSheets.forEach((sheet, idx) => {
         sheet.sheetName = `Лист ${idx + 1}`;
     });

@@ -21,7 +21,6 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
     const [selectedMtSlotId, setSelectedMtSlotId] = useState<number | null>(null);
     const [newLayoutName, setNewLayoutName] = useState('');
 
-    // Synchronize local stations with active layout change
     useEffect(() => {
         const layout = layouts.find(l => l.id === activeLayoutId);
         if (layout) {
@@ -29,7 +28,6 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
         }
     }, [activeLayoutId, layouts]);
 
-    // Derived state for current tools
     const toolsOnTurret = tools.filter(t => t.stationNumber !== 0 && t.stationNumber !== undefined);
     const availableTools = tools.filter(t => !t.stationNumber);
 
@@ -77,7 +75,7 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
         const station = currentStations.find(s => s.id === stationId);
         if (station?.type === 'MT') {
             setIsMtView(true);
-            setSelectedMtSlotId(1); // Default to slot 1
+            setSelectedMtSlotId(1);
         }
         setSelectedStationId(stationId);
     };
@@ -86,7 +84,6 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
         if (station.type === 'MT') {
             return tool.stationType === 'MT';
         }
-        // Check toolSize match (A, B, C, D)
         return tool.toolSize === station.type;
     };
 
@@ -115,7 +112,6 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
             return t;
         });
         setTools(updatedTools);
-        // Also update snapshot in layout
         setLayouts(prev => prev.map(l => l.id === activeLayoutId ? { ...l, toolsSnapshot: updatedTools } : l));
     };
 
@@ -131,14 +127,23 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
         setLayouts(prev => prev.map(l => l.id === activeLayoutId ? { ...l, toolsSnapshot: updatedTools } : l));
     };
 
-    const mtSlots = Array.from({ length: 20 }, (_, i) => {
+    // 24 slots for MT visualization (Synced with TurretViewModal logic)
+    const mtSlots = Array.from({ length: 24 }, (_, i) => {
         const id = i + 1;
-        const radius = id <= 10 ? 30 : 60;
-        const angle = (360 / 10) * (id - 1) - 90;
+        const isInner = id > 12;
+        const indexInRing = isInner ? id - 13 : id - 1;
+        
+        // Geometry matching TurretViewModal but scaled down for setup view
+        // Setup view box is -150 to 150. Modal is -250 to 250.
+        // Scale ratio ~ 0.6
+        const radius = isInner ? 84 : 120; // 140*0.6, 200*0.6
+        
+        let angle = - (indexInRing * 30); 
+        if (isInner) angle -= 15;
+
         return { id, angle, radius };
     });
 
-    // Counter-Clockwise numbering starting from Bottom (6 o'clock)
     const renderMainTurret = () => (
         <svg width="100%" height="100%" viewBox="-350 -350 700 700">
             <defs>
@@ -172,7 +177,6 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
                             {hasTools && !isMT && <ToolSvg tool={assignedTools[0]} />}
                         </g>
 
-                        {/* Tool Name above tool image */}
                         {hasTools && !isMT && (
                             <text y="-22" textAnchor="middle" className="text-[8px] fill-blue-900 font-bold select-none pointer-events-none" style={{ textShadow: '0px 0px 2px white' }}>
                                 {assignedTools[0].name}
@@ -186,10 +190,6 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
 
                         <text y="40" textAnchor="middle" className="text-[10px] fill-gray-700 font-bold select-none bg-white">
                             {s.type} {s.isAutoIndex ? '(AI)' : ''}
-                        </text>
-                        
-                        <text y="0" dy="3" textAnchor="middle" className="text-xs fill-gray-400 font-bold select-none opacity-40 pointer-events-none">
-                            {s.type}
                         </text>
                         
                         {isMT && (
@@ -219,8 +219,8 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
                      
                      {mtSlots.map(slot => {
                          const rad = (slot.angle * Math.PI) / 180;
-                         const x = Math.cos(rad) * slot.radius * 1.5;
-                         const y = Math.sin(rad) * slot.radius * 1.5;
+                         const x = Math.cos(rad) * slot.radius;
+                         const y = Math.sin(rad) * slot.radius;
                          const assignedTool = toolsOnTurret.find(t => t.stationNumber === selectedStationId && t.mtIndex === slot.id);
                          const isSelected = selectedMtSlotId === slot.id;
 
@@ -235,8 +235,8 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
                 </svg>
             </div>
             <div className="flex-none p-4 border-t border-gray-300 bg-gray-100 h-1/3 overflow-y-auto">
-                <h4 className="font-bold text-purple-800 mb-2">Содержимое MT (20 слотов)</h4>
-                <div className="grid grid-cols-5 gap-2">
+                <h4 className="font-bold text-purple-800 mb-2">Содержимое MT (24 слота)</h4>
+                <div className="grid grid-cols-6 gap-2">
                     {mtSlots.map(slot => {
                          const assignedTool = toolsOnTurret.find(t => t.stationNumber === selectedStationId && t.mtIndex === slot.id);
                          const isSelected = selectedMtSlotId === slot.id;
@@ -265,8 +265,6 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
 
     const selectedStation = currentStations.find(s => s.id === selectedStationId);
     
-    // Determine the currently "Active" tool for the sidebar context
-    // If MT View, use the selected SLOT tool. If Main view, use the mounted tool.
     const mountedToolInMain = selectedStation && !isMtView ? toolsOnTurret.find(t => t.stationNumber === selectedStation.id && !t.mtIndex) : null;
     const mountedToolInMtSlot = isMtView && selectedMtSlotId ? toolsOnTurret.find(t => t.stationNumber === selectedStationId && t.mtIndex === selectedMtSlotId) : null;
     
@@ -274,17 +272,13 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
 
     return (
         <div className="flex h-full bg-gray-100 text-gray-900 font-sans">
-            {/* Left: Turret Visualization */}
             <div className="flex-1 relative bg-gray-300 shadow-inner overflow-hidden">
                  {isMtView ? renderMtView() : renderMainTurret()}
             </div>
 
-            {/* Right: Sidebar for Config */}
             <div className="w-96 bg-gray-800 text-gray-100 flex flex-col border-l border-gray-700 shadow-xl z-10">
-                {/* 1. Global Controls */}
                 <div className="p-4 border-b border-gray-700 bg-gray-900">
                     <h2 className="text-lg font-bold text-blue-400 mb-2 flex items-center"><SettingsIcon className="w-5 h-5 mr-2"/> Настройка Револьвера</h2>
-                    
                     <div className="space-y-2">
                         <div>
                              <label className="text-xs text-gray-400 block mb-1">Текущая конфигурация</label>
@@ -312,7 +306,6 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
                     </div>
                 </div>
 
-                {/* 2. Station Configuration */}
                 <div className="p-4 border-b border-gray-700 bg-gray-800">
                     <h3 className="font-bold text-gray-300 mb-2">
                         {isMtView 
@@ -348,7 +341,6 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
                                 </div>
                             )}
                             
-                            {/* Show Mounted Tool Info & Remove Button */}
                             {activeTool && (
                                 <div className="bg-gray-700 p-3 rounded mt-2 border border-gray-600">
                                     <div className="flex items-center space-x-3 mb-3">
@@ -406,7 +398,6 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
                     )}
                 </div>
 
-                {/* 3. Tool Library */}
                 <div className="flex-1 overflow-hidden flex flex-col">
                     <div className="p-2 bg-gray-900 border-b border-gray-700">
                         <h4 className="text-xs font-bold text-gray-400 uppercase">Библиотека</h4>
@@ -415,11 +406,10 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
                          {availableTools.map(tool => {
                              const displaySize = (tool.stationType === 'MT' || tool.name.startsWith('MT')) ? 'MT' : tool.toolSize;
                              const stationType = selectedStation?.type;
-                             // Compatibility check for visualization
                              let isCompatible = false;
                              if (selectedStation) {
-                                 if (isMtView) isCompatible = tool.stationType === 'MT'; // In MT view, strictly look for MT tools
-                                 else if (stationType === 'MT') isCompatible = false; // Cannot mount straight to MT base in non-MT view
+                                 if (isMtView) isCompatible = tool.stationType === 'MT'; 
+                                 else if (stationType === 'MT') isCompatible = false; 
                                  else isCompatible = tool.toolSize === stationType;
                              }
                              

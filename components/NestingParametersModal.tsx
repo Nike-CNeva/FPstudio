@@ -1,7 +1,6 @@
 
-
 import React, { useState, useEffect } from 'react';
-import { Part, NestLayout, ScheduledPart, NestingConstraints, SheetStock } from '../types';
+import { Part, NestLayout, ScheduledPart, NestingConstraints, SheetStock, SheetUtilizationStrategy } from '../types';
 import { SaveIcon, PlusIcon, TrashIcon } from './Icons';
 import { ModalInputField } from './common/InputField';
 import { SidebarTabButton } from './common/Button';
@@ -175,8 +174,10 @@ const PartListTab: React.FC<{ allParts: Part[], scheduledParts: ScheduledPart[],
     );
 };
 
+// MaterialSheetTab: Updated to match screenshot style
 const MaterialSheetTab: React.FC<{ settings: NestLayout['settings'], setSettings: React.Dispatch<React.SetStateAction<NestLayout['settings']>> }> = ({ settings, setSettings }) => {
-    
+    const [selectedSheetId, setSelectedSheetId] = useState<string | null>(null);
+
     const addSheet = () => {
         const newSheet: SheetStock = {
             id: generateId(),
@@ -184,101 +185,199 @@ const MaterialSheetTab: React.FC<{ settings: NestLayout['settings'], setSettings
             height: 1250,
             thickness: 1.0,
             material: 'St-3',
-            quantity: 10
+            quantity: 1,
+            cost: 0
         };
         setSettings(prev => ({
             ...prev,
-            availableSheets: [...prev.availableSheets, newSheet]
+            availableSheets: [...prev.availableSheets, newSheet],
+            activeSheetId: newSheet.id // Select new one
+        }));
+        setSelectedSheetId(newSheet.id);
+    };
+
+    const removeSheet = () => {
+        if (!selectedSheetId) return;
+        setSettings(prev => {
+            const newSheets = prev.availableSheets.filter(s => s.id !== selectedSheetId);
+            return { 
+                ...prev, 
+                availableSheets: newSheets, 
+                activeSheetId: newSheets.length > 0 ? newSheets[0].id : null 
+            };
+        });
+        setSelectedSheetId(null);
+    };
+
+    const updateSelectedSheet = (field: keyof SheetStock, value: any) => {
+        if (!selectedSheetId) return;
+        setSettings(prev => ({
+            ...prev,
+            availableSheets: prev.availableSheets.map(s => s.id === selectedSheetId ? { ...s, [field]: value } : s)
         }));
     };
 
-    const removeSheet = (id: string) => {
+    const moveSheet = (direction: 'up' | 'top') => {
+        if (!selectedSheetId) return;
         setSettings(prev => {
-            const newSheets = prev.availableSheets.filter(s => s.id !== id);
-            // If active was removed, set to first available or null
-            const newActiveId = prev.activeSheetId === id ? (newSheets[0]?.id || null) : prev.activeSheetId;
-            return { ...prev, availableSheets: newSheets, activeSheetId: newActiveId };
+            const sheets = [...prev.availableSheets];
+            const idx = sheets.findIndex(s => s.id === selectedSheetId);
+            if (idx <= 0) return prev; // Already top
+
+            const item = sheets[idx];
+            sheets.splice(idx, 1);
+            if (direction === 'top') {
+                sheets.unshift(item);
+            } else {
+                sheets.splice(idx - 1, 0, item);
+            }
+            return { ...prev, availableSheets: sheets };
         });
     };
 
-    const updateSheet = (id: string, field: keyof SheetStock, value: any) => {
-        setSettings(prev => ({
-            ...prev,
-            availableSheets: prev.availableSheets.map(s => s.id === id ? { ...s, [field]: value } : s)
-        }));
-    };
-
-    const setActive = (id: string) => {
-        setSettings(prev => ({ ...prev, activeSheetId: id }));
-    };
+    const selectedSheet = settings.availableSheets.find(s => s.id === selectedSheetId);
 
     return (
-        <div className="space-y-4">
-             <div className="flex justify-between items-center mb-2">
-                 <h3 className="font-semibold text-gray-300">Список доступных листов</h3>
-                 <button onClick={addSheet} className="text-xs bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded text-white flex items-center space-x-1">
-                     <PlusIcon className="w-4 h-4" /> <span>Добавить размер</span>
-                 </button>
-             </div>
-             
-             <div className="bg-gray-900/50 rounded-md border border-gray-700 overflow-hidden">
-                 <table className="w-full text-left text-sm">
-                     <thead className="bg-gray-800 text-gray-400 text-xs uppercase">
-                         <tr>
-                             <th className="p-3 text-center">Активен</th>
-                             <th className="p-3">Ширина</th>
-                             <th className="p-3">Высота</th>
-                             <th className="p-3">Материал</th>
-                             <th className="p-3">Толщина</th>
-                             <th className="p-3">Кол-во</th>
-                             <th className="p-3 w-10"></th>
-                         </tr>
-                     </thead>
-                     <tbody className="divide-y divide-gray-700">
-                         {settings.availableSheets.map(sheet => (
-                             <tr key={sheet.id} className={settings.activeSheetId === sheet.id ? 'bg-blue-900/20' : ''}>
-                                 <td className="p-2 text-center">
-                                     <input 
-                                        type="radio" 
-                                        name="active_sheet" 
-                                        checked={settings.activeSheetId === sheet.id} 
-                                        onChange={() => setActive(sheet.id)}
-                                        className="form-radio h-4 w-4 text-blue-500"
-                                     />
-                                 </td>
-                                 <td className="p-2">
-                                     <input type="number" value={sheet.width} onChange={e => updateSheet(sheet.id, 'width', parseFloat(e.target.value)||0)} className="w-20 bg-gray-800 border border-gray-600 rounded px-1 py-1 text-xs" />
-                                 </td>
-                                 <td className="p-2">
-                                     <input type="number" value={sheet.height} onChange={e => updateSheet(sheet.id, 'height', parseFloat(e.target.value)||0)} className="w-20 bg-gray-800 border border-gray-600 rounded px-1 py-1 text-xs" />
-                                 </td>
-                                 <td className="p-2">
-                                     <input type="text" value={sheet.material} onChange={e => updateSheet(sheet.id, 'material', e.target.value)} className="w-20 bg-gray-800 border border-gray-600 rounded px-1 py-1 text-xs" />
-                                 </td>
-                                 <td className="p-2">
-                                     <input type="number" value={sheet.thickness} onChange={e => updateSheet(sheet.id, 'thickness', parseFloat(e.target.value)||0)} className="w-16 bg-gray-800 border border-gray-600 rounded px-1 py-1 text-xs" />
-                                 </td>
-                                 <td className="p-2">
-                                     <input type="number" value={sheet.quantity} onChange={e => updateSheet(sheet.id, 'quantity', parseFloat(e.target.value)||0)} className="w-16 bg-gray-800 border border-gray-600 rounded px-1 py-1 text-xs" />
-                                 </td>
-                                 <td className="p-2 text-center">
-                                     <button onClick={() => removeSheet(sheet.id)} className="text-gray-500 hover:text-red-500">
-                                         <TrashIcon className="w-4 h-4" />
-                                     </button>
-                                 </td>
-                             </tr>
-                         ))}
-                     </tbody>
-                 </table>
-                 {settings.availableSheets.length === 0 && <div className="p-4 text-center text-gray-500">Список пуст</div>}
-             </div>
+        <div className="space-y-6">
+            
+            {/* Top Section: Reserved Sheets List */}
+            <div className="flex space-x-4 h-64">
+                <fieldset className="border border-gray-600 p-2 rounded-md bg-gray-800/50 flex-1 flex flex-col overflow-hidden">
+                    <legend className="px-2 font-semibold text-gray-300 text-sm">Reserved sheets</legend>
+                    <div className="flex-1 overflow-auto bg-white text-black">
+                        <table className="w-full text-left text-xs border-collapse">
+                            <thead className="bg-gray-200 sticky top-0">
+                                <tr>
+                                    <th className="p-1 border border-gray-300">Sheet ID</th>
+                                    <th className="p-1 border border-gray-300">Size-X</th>
+                                    <th className="p-1 border border-gray-300">Size-Y</th>
+                                    <th className="p-1 border border-gray-300">Reserved</th>
+                                    <th className="p-1 border border-gray-300">Cost</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {settings.availableSheets.map(sheet => (
+                                    <tr 
+                                        key={sheet.id} 
+                                        onClick={() => setSelectedSheetId(sheet.id)}
+                                        className={`cursor-pointer ${selectedSheetId === sheet.id ? 'bg-blue-500 text-white' : 'hover:bg-gray-100'}`}
+                                    >
+                                        <td className="p-1 border border-gray-300">{sheet.material}</td>
+                                        <td className="p-1 border border-gray-300">{sheet.width}</td>
+                                        <td className="p-1 border border-gray-300">{sheet.height}</td>
+                                        <td className="p-1 border border-gray-300">{sheet.quantity}</td>
+                                        <td className="p-1 border border-gray-300">{sheet.cost}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </fieldset>
+
+                <div className="flex flex-col space-y-2 w-32 pt-2">
+                    <button onClick={addSheet} className="px-3 py-1 bg-gray-200 hover:bg-gray-300 text-black text-xs rounded border border-gray-400">New...</button>
+                    {/* Modify is essentially just enabling inputs below, but visual consistency */}
+                    <button disabled={!selectedSheetId} className="px-3 py-1 bg-gray-200 hover:bg-gray-300 text-black text-xs rounded border border-gray-400 disabled:opacity-50">Modify...</button>
+                    <button onClick={removeSheet} disabled={!selectedSheetId} className="px-3 py-1 bg-gray-200 hover:bg-gray-300 text-black text-xs rounded border border-gray-400 disabled:opacity-50">Delete</button>
+                    <div className="h-4"></div>
+                    <button onClick={() => moveSheet('up')} disabled={!selectedSheetId} className="px-3 py-1 bg-gray-200 hover:bg-gray-300 text-black text-xs rounded border border-gray-400 disabled:opacity-50">Switch up</button>
+                    <button onClick={() => moveSheet('top')} disabled={!selectedSheetId} className="px-3 py-1 bg-gray-200 hover:bg-gray-300 text-black text-xs rounded border border-gray-400 disabled:opacity-50">Move to top</button>
+                </div>
+            </div>
+
+            {/* Middle Section: Edit Fields (Hidden mostly, but active if modifying) */}
+            {selectedSheet && (
+                <div className="bg-gray-700/50 p-2 rounded border border-gray-600 grid grid-cols-5 gap-2 text-xs">
+                    <div className="col-span-1"><label className="block text-gray-400 mb-1">Sheet ID</label><input type="text" value={selectedSheet.material} onChange={e => updateSelectedSheet('material', e.target.value)} className="w-full bg-gray-900 border border-gray-500 px-1 py-0.5"/></div>
+                    <div className="col-span-1"><label className="block text-gray-400 mb-1">Size X</label><input type="number" value={selectedSheet.width} onChange={e => updateSelectedSheet('width', parseFloat(e.target.value)||0)} className="w-full bg-gray-900 border border-gray-500 px-1 py-0.5"/></div>
+                    <div className="col-span-1"><label className="block text-gray-400 mb-1">Size Y</label><input type="number" value={selectedSheet.height} onChange={e => updateSelectedSheet('height', parseFloat(e.target.value)||0)} className="w-full bg-gray-900 border border-gray-500 px-1 py-0.5"/></div>
+                    <div className="col-span-1"><label className="block text-gray-400 mb-1">Reserved</label><input type="number" value={selectedSheet.quantity} onChange={e => updateSelectedSheet('quantity', parseFloat(e.target.value)||0)} className="w-full bg-gray-900 border border-gray-500 px-1 py-0.5"/></div>
+                    <div className="col-span-1"><label className="block text-gray-400 mb-1">Cost</label><input type="number" value={selectedSheet.cost || 0} onChange={e => updateSelectedSheet('cost', parseFloat(e.target.value)||0)} className="w-full bg-gray-900 border border-gray-500 px-1 py-0.5"/></div>
+                </div>
+            )}
+
+            {/* Bottom Section: Utilization & Coil */}
+            <div className="grid grid-cols-2 gap-4">
+                <fieldset className="border border-gray-600 p-3 rounded-md bg-gray-800/50">
+                    <legend className="px-2 font-semibold text-gray-300 text-sm">Sheet utilization option</legend>
+                    <div className="space-y-2 text-xs">
+                        <label className="flex items-center space-x-2 cursor-pointer">
+                            <input 
+                                type="radio" 
+                                name="utilization" 
+                                checked={settings.utilizationStrategy === SheetUtilizationStrategy.ListedOrder} 
+                                onChange={() => setSettings(s => ({...s, utilizationStrategy: SheetUtilizationStrategy.ListedOrder}))}
+                                className="form-radio h-3 w-3 text-blue-600" 
+                            />
+                            <span>Use in listed order</span>
+                        </label>
+                        <label className="flex items-center space-x-2 cursor-pointer">
+                            <input 
+                                type="radio" 
+                                name="utilization" 
+                                checked={settings.utilizationStrategy === SheetUtilizationStrategy.Smallest} 
+                                onChange={() => setSettings(s => ({...s, utilizationStrategy: SheetUtilizationStrategy.Smallest}))}
+                                className="form-radio h-3 w-3 text-blue-600" 
+                            />
+                            <span>Use smallest</span>
+                        </label>
+                        <label className="flex items-center space-x-2 cursor-pointer">
+                            <input type="radio" disabled className="form-radio h-3 w-3 text-gray-600" />
+                            <span className="text-gray-500">Use only the first sheet size</span>
+                        </label>
+                        <label className="flex items-center space-x-2 cursor-pointer">
+                            <input 
+                                type="radio" 
+                                name="utilization" 
+                                checked={settings.utilizationStrategy === SheetUtilizationStrategy.BestFit} 
+                                onChange={() => setSettings(s => ({...s, utilizationStrategy: SheetUtilizationStrategy.BestFit}))}
+                                className="form-radio h-3 w-3 text-blue-600" 
+                            />
+                            <span>Advanced (Best Fit)</span>
+                        </label>
+                        <div className="pl-6 text-gray-400 flex items-center space-x-2">
+                            <span>Number of sizes to try:</span>
+                            <input type="number" disabled value="2" className="w-10 bg-gray-700 px-1 border border-gray-600 text-gray-500" />
+                        </div>
+                    </div>
+                </fieldset>
+
+                <fieldset className="border border-gray-600 p-3 rounded-md bg-gray-800/50 opacity-50 pointer-events-none">
+                    <legend className="px-2 font-semibold text-gray-300 text-sm">Coil nesting</legend>
+                    <div className="space-y-2 text-xs">
+                        <label className="flex items-center space-x-2">
+                            <input type="checkbox" className="form-checkbox h-3 w-3" />
+                            <span>Enable</span>
+                        </label>
+                        <div className="grid grid-cols-2 gap-2 text-right">
+                            <div className="flex justify-end items-center gap-2"><label>Min length:</label><input type="text" className="w-12 bg-gray-700" /></div>
+                            <div className="flex justify-end items-center gap-2"><label>Max length:</label><input type="text" className="w-12 bg-gray-700" /></div>
+                            <div className="flex justify-end items-center gap-2"><label>Step:</label><input type="text" className="w-12 bg-gray-700" /></div>
+                        </div>
+                    </div>
+                </fieldset>
+            </div>
+
+            {/* Other Options */}
+            <div className="flex space-x-4 text-xs text-gray-300">
+                <div className="flex items-center space-x-2">
+                    <label>Sort sheet queue:</label>
+                    <select className="bg-gray-700 border border-gray-600 rounded px-2 py-1">
+                        <option>No sorting</option>
+                    </select>
+                </div>
+                <div className="space-y-1">
+                    <label className="flex items-center space-x-2"><input type="checkbox" /> <span>Square last sheet</span></label>
+                    <label className="flex items-center space-x-2"><input type="checkbox" /> <span>Set maximum number of nested sheets</span></label>
+                </div>
+            </div>
         </div>
     );
 };
 
 
 export const NestingParametersModal: React.FC<NestingParametersModalProps> = ({ onClose, onSave, activeNest, allParts }) => {
-    const [activeTab, setActiveTab] = useState<'global' | 'parts' | 'sheet'>('global');
+    const [activeTab, setActiveTab] = useState<'global' | 'parts' | 'sheet'>('sheet'); // Default to sheet as requested
     const [settings, setSettings] = useState<NestLayout['settings']>(() => JSON.parse(JSON.stringify(activeNest.settings)));
     const [scheduledParts, setScheduledParts] = useState<ScheduledPart[]>(() => JSON.parse(JSON.stringify(activeNest.scheduledParts)));
 
@@ -288,30 +387,30 @@ export const NestingParametersModal: React.FC<NestingParametersModalProps> = ({ 
 
     return (
         <div className="absolute inset-0 bg-black/70 flex items-center justify-center z-50">
-            <div className="bg-gray-800 rounded-lg shadow-xl w-full max-w-4xl flex flex-col max-h-[90vh]">
-                <div className="flex justify-between items-center p-4 border-b border-gray-700">
-                    <h2 className="text-xl font-bold">Параметры Раскроя</h2>
-                    <button onClick={onClose} className="text-gray-400 hover:text-white text-3xl leading-none">&times;</button>
+            <div className="bg-gray-800 rounded-lg shadow-xl w-full max-w-4xl flex flex-col max-h-[95vh] border border-gray-600">
+                <div className="flex justify-between items-center p-3 border-b border-gray-700 bg-gray-900 rounded-t-lg">
+                    <h2 className="text-sm font-bold text-white">Nesting parameters</h2>
+                    <button onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none">&times;</button>
                 </div>
                 
-                <div className="flex border-b border-gray-700 px-4">
-                    <SidebarTabButton label="Глобальные параметры" active={activeTab === 'global'} onClick={() => setActiveTab('global')} />
-                    <SidebarTabButton label="Список Деталей" active={activeTab === 'parts'} onClick={() => setActiveTab('parts')} />
-                    <SidebarTabButton label="Материал" active={activeTab === 'sheet'} onClick={() => setActiveTab('sheet')} />
+                <div className="flex border-b border-gray-700 px-4 bg-gray-800 pt-2">
+                    <SidebarTabButton label="Global parameters" active={activeTab === 'global'} onClick={() => setActiveTab('global')} />
+                    <SidebarTabButton label="Part list" active={activeTab === 'parts'} onClick={() => setActiveTab('parts')} />
+                    <SidebarTabButton label="Material sheet list" active={activeTab === 'sheet'} onClick={() => setActiveTab('sheet')} />
                 </div>
 
-                <div className="p-6 overflow-y-auto">
+                <div className="p-6 overflow-y-auto bg-gray-800 flex-1">
                     {activeTab === 'global' && <GlobalParametersTab settings={settings} setSettings={setSettings} />}
                     {activeTab === 'parts' && <PartListTab allParts={allParts} scheduledParts={scheduledParts} setScheduledParts={setScheduledParts} />}
                     {activeTab === 'sheet' && <MaterialSheetTab settings={settings} setSettings={setSettings} />}
                 </div>
 
-                <div className="p-4 bg-gray-700/50 flex justify-end space-x-3 rounded-b-lg mt-auto">
-                    <button onClick={onClose} className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded-md">Отмена</button>
-                    <button onClick={handleSave} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-md flex items-center space-x-2">
-                        <SaveIcon className="w-5 h-5"/>
-                        <span>OK</span>
-                    </button>
+                <div className="p-3 bg-gray-900 flex justify-between items-center rounded-b-lg border-t border-gray-700">
+                    <button className="px-4 py-1 bg-gray-700 hover:bg-gray-600 rounded-md text-xs text-gray-300 border border-gray-500">Use as default</button>
+                    <div className="flex space-x-2">
+                        <button onClick={handleSave} className="px-6 py-1 bg-gray-200 hover:bg-white text-black rounded-md text-xs border border-gray-400 shadow">OK</button>
+                        <button onClick={onClose} className="px-6 py-1 bg-gray-200 hover:bg-white text-black rounded-md text-xs border border-gray-400 shadow">Cancel</button>
+                    </div>
                 </div>
             </div>
         </div>

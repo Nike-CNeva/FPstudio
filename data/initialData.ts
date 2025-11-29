@@ -1,5 +1,5 @@
 
-import { Tool, Part, NestLayout, ToolShape, PunchType, TurretLayout, StationConfig, ParametricScript } from '../types';
+import { Tool, Part, NestLayout, ToolShape, PunchType, TurretLayout, StationConfig, ParametricScript, MachineSettings, OptimizerSettings, SheetUtilizationStrategy } from '../types';
 import { generateId } from '../utils/helpers';
 
 const createDefaultTool = (overrides: Partial<Tool>): Tool => ({
@@ -35,125 +35,272 @@ const createDefaultTool = (overrides: Partial<Tool>): Tool => ({
   ...overrides,
 });
 
+// Helper for triangle path (equilateral)
+const createTrianglePath = (s: number) => {
+    const h = s * Math.sqrt(3) / 2;
+    // Centered at 0,0
+    return `M 0 ${-h/2} L ${s/2} ${h/2} L ${-s/2} ${h/2} Z`;
+};
 
 export const initialTools: Tool[] = [
-    // Station MT Tools (Starting)
+    // --- Station 1 (MT - 24 Stations) ---
+    // User Specification: 
+    // t13 - 3.3
+    // t24 - 2.5
+    // t12 - 4
+    // t23 - 2
+    // t11 - 5
+
     createDefaultTool({
-        name: 'RND_2_MT',
+        name: 'RND_3.3_MT',
         shape: ToolShape.Circle,
-        width: 2,
-        height: 2,
-        punchType: PunchType.Starting,
-        stationNumber: 1, // MultiTool Station
-        mtIndex: 1,       // Slot 1
+        width: 3.3,
+        height: 3.3,
+        punchType: PunchType.General,
+        stationNumber: 1,
+        mtIndex: 13, // T13
         stationType: 'MT',
-        toolSize: 'A', 
-        dies: [{ clearance: 0.2 }]
+        toolSize: 'A',
+        dies: [{ clearance: 0.12 }]
+    }),
+    createDefaultTool({
+        name: 'RND_2.5_MT',
+        shape: ToolShape.Circle,
+        width: 2.5,
+        height: 2.5,
+        punchType: PunchType.General,
+        stationNumber: 1,
+        mtIndex: 24, // T24
+        stationType: 'MT',
+        toolSize: 'A',
+        dies: [{ clearance: 0.1 }]
     }),
     createDefaultTool({
         name: 'RND_4_MT',
         shape: ToolShape.Circle,
         width: 4,
         height: 4,
+        punchType: PunchType.General,
+        stationNumber: 1,
+        mtIndex: 12, // T12
+        stationType: 'MT',
+        toolSize: 'A',
+        dies: [{ clearance: 0.32 }]
+    }),
+    createDefaultTool({
+        name: 'RND_2_MT',
+        shape: ToolShape.Circle,
+        width: 2,
+        height: 2,
         punchType: PunchType.Starting,
-        stationNumber: 1, // MultiTool Station
-        mtIndex: 2,       // Slot 2
+        stationNumber: 1,
+        mtIndex: 23, // T23
         stationType: 'MT',
         toolSize: 'A',
         dies: [{ clearance: 0.2 }]
     }),
-    
-    // OBR Tools (Horizontal Default: W > H)
     createDefaultTool({
-        name: 'OBR_5X10',
-        shape: ToolShape.Oblong,
-        width: 10,
-        height: 5,
-        punchType: PunchType.Starting,
-        stationNumber: 3,
-        stationType: 'B',
-        toolSize: 'B',
-        dies: [{ clearance: 0.2 }]
-    }),
-    
-    // RECT Tools (Horizontal Default: W > H)
-    createDefaultTool({
-        name: 'RECT_3X10',
-        shape: ToolShape.Rectangle,
-        width: 10,
-        height: 3,
-        punchType: PunchType.General,
-        stationNumber: 4,
-        stationType: 'B',
-        toolSize: 'B',
-        dies: [{ clearance: 0.2 }]
-    }),
-    createDefaultTool({
-        name: 'RECT_5X30',
-        shape: ToolShape.Rectangle,
-        width: 30,
+        name: 'RND_5_MT',
+        shape: ToolShape.Circle,
+        width: 5,
         height: 5,
         punchType: PunchType.General,
-        stationNumber: 5,
+        stationNumber: 1,
+        mtIndex: 11, // T11
+        stationType: 'MT',
+        toolSize: 'A',
+        dies: [{ clearance: 0.2 }]
+    }),
+
+    // --- Station 2 (B) ---
+    createDefaultTool({
+        name: 'RND_3.6',
+        shape: ToolShape.Circle,
+        width: 3.6,
+        height: 3.6,
+        punchType: PunchType.General,
+        stationNumber: 2,
         stationType: 'B',
         toolSize: 'B',
         dies: [{ clearance: 0.2 }]
     }),
 
-    // Contour Tools
+    // --- Station 3 (Di - AutoIndex) ---
+    createDefaultTool({
+        name: 'RECT_5X80',
+        shape: ToolShape.Rectangle,
+        width: 80, 
+        height: 5,
+        punchType: PunchType.Contour,
+        stationNumber: 3,
+        stationType: 'D',
+        toolSize: 'D',
+        isAutoIndex: true,
+        dies: [{ clearance: 0.2 }]
+    }),
+
+    // --- Station 5 (Ci - AutoIndex) ---
     createDefaultTool({
         name: 'RECT_5X50',
         shape: ToolShape.Rectangle,
         width: 50,
         height: 5,
         punchType: PunchType.Contour,
-        stationNumber: 12, // Explicitly C station
+        stationNumber: 5,
         stationType: 'C',
         toolSize: 'C',
+        isAutoIndex: true,
         dies: [{ clearance: 0.2 }]
     }),
 
+    // --- Station 6 (B) ---
     createDefaultTool({
-        name: 'RECT_5X80',
+        name: 'RND_4.5',
+        shape: ToolShape.Circle,
+        width: 4.5,
+        height: 4.5,
+        punchType: PunchType.General,
+        stationNumber: 6,
+        stationType: 'B',
+        toolSize: 'B',
+        dies: [{ clearance: 0.2 }]
+    }),
+
+    // --- Station 7 (Bi - AutoIndex) ---
+    createDefaultTool({
+        name: 'RECT_5X30',
         shape: ToolShape.Rectangle,
-        width: 80,
+        width: 30,
         height: 5,
-        punchType: PunchType.Contour,
-        stationNumber: 17, // Explicitly D station
+        punchType: PunchType.General,
+        stationNumber: 7,
+        stationType: 'B',
+        toolSize: 'B',
+        isAutoIndex: true,
+        dies: [{ clearance: 0.2 }]
+    }),
+
+    // --- Station 9 (Bi - AutoIndex) ---
+    createDefaultTool({
+        name: 'RECT_3X10',
+        shape: ToolShape.Rectangle,
+        width: 10,
+        height: 3,
+        punchType: PunchType.General,
+        stationNumber: 9,
+        stationType: 'B',
+        toolSize: 'B',
+        isAutoIndex: true,
+        dies: [{ clearance: 0.2 }]
+    }),
+
+    // --- Station 10 (B) ---
+    createDefaultTool({
+        name: 'OBR_5X10',
+        shape: ToolShape.Oblong,
+        width: 10,
+        height: 5,
+        punchType: PunchType.General,
+        stationNumber: 10,
+        stationType: 'B',
+        toolSize: 'B',
+        defaultRotation: 90,
+        dies: [{ clearance: 0.2 }]
+    }),
+
+    // --- Station 11 (Bi - AutoIndex) ---
+    createDefaultTool({
+        name: 'OBR_1.8X20',
+        shape: ToolShape.Oblong,
+        width: 20,
+        height: 1.8,
+        punchType: PunchType.General,
+        stationNumber: 11,
+        stationType: 'B',
+        toolSize: 'B',
+        isAutoIndex: true,
+        dies: [{ clearance: 0.2 }]
+    }),
+
+    // --- Station 14 (B) ---
+    createDefaultTool({
+        name: 'OBR_5X10',
+        shape: ToolShape.Oblong,
+        width: 10,
+        height: 5,
+        punchType: PunchType.General,
+        stationNumber: 14,
+        stationType: 'B',
+        toolSize: 'B',
+        defaultRotation: 0,
+        dies: [{ clearance: 0.2 }]
+    }),
+
+    // --- Station 15 (Dif - AutoIndex) - TR_IKLYA ---
+    createDefaultTool({
+        name: 'TR_IKLYA',
+        shape: ToolShape.Special,
+        width: 15,
+        height: 15,
+        customPath: createTrianglePath(15),
+        punchType: PunchType.General,
+        stationNumber: 15,
         stationType: 'D',
         toolSize: 'D',
-        dies: [{ clearance: 0.2 }]
+        isAutoIndex: true,
+        dies: [{ clearance: 0.3 }]
+    }),
+
+    // --- Station 16 (B) ---
+    createDefaultTool({
+        name: 'RND_8',
+        shape: ToolShape.Circle,
+        width: 8,
+        height: 8,
+        punchType: PunchType.General,
+        stationNumber: 16,
+        stationType: 'B',
+        toolSize: 'B',
+        dies: [{ clearance: 0.24 }]
+    }),
+
+    // --- Station 20 (B) ---
+    createDefaultTool({
+        name: 'RND_5.2',
+        shape: ToolShape.Circle,
+        width: 5.2,
+        height: 5.2,
+        punchType: PunchType.General,
+        stationNumber: 20,
+        stationType: 'B',
+        toolSize: 'B',
+        dies: [{ clearance: 0.3 }]
     }),
 ];
 
 const generateDefaultStations = (): StationConfig[] => {
-    return Array.from({ length: 20 }, (_, i) => {
-        const id = i + 1;
-        let type = 'B';
-        
-        // Explicit station mapping
-        switch (id) {
-            case 1:
-                type = 'MT';
-                break;
-            case 12:
-            case 16:
-                type = 'C';
-                break;
-            case 17:
-            case 18:
-                type = 'D';
-                break;
-            default:
-                type = 'B';
-                break;
-        }
-
-        // Auto index logic (example distribution)
-        const isAutoIndex = type !== 'MT' && (id % 2 === 0);
-        
-        return { id, type, isAutoIndex };
-    });
+    return [
+        { id: 1, type: 'MT', isAutoIndex: false },
+        { id: 2, type: 'B', isAutoIndex: false },
+        { id: 3, type: 'D', isAutoIndex: true },  // Di
+        { id: 4, type: 'B', isAutoIndex: false },
+        { id: 5, type: 'C', isAutoIndex: true },  // Ci
+        { id: 6, type: 'B', isAutoIndex: false },
+        { id: 7, type: 'B', isAutoIndex: true },  // Bi
+        { id: 8, type: 'B', isAutoIndex: false },
+        { id: 9, type: 'B', isAutoIndex: true },  // Bi
+        { id: 10, type: 'B', isAutoIndex: false },
+        { id: 11, type: 'B', isAutoIndex: true }, // Bi
+        { id: 12, type: 'C', isAutoIndex: false },
+        { id: 13, type: 'B', isAutoIndex: true }, // Bi
+        { id: 14, type: 'B', isAutoIndex: false },
+        { id: 15, type: 'D', isAutoIndex: true }, // Dif
+        { id: 16, type: 'B', isAutoIndex: false },
+        { id: 17, type: 'D', isAutoIndex: false },
+        { id: 18, type: 'C', isAutoIndex: false },
+        { id: 19, type: 'D', isAutoIndex: false },
+        { id: 20, type: 'B', isAutoIndex: false },
+    ];
 };
 
 export const initialTurretLayouts: TurretLayout[] = [
@@ -242,11 +389,13 @@ export const initialNests: NestLayout[] = [
     {
         id: generateId(),
         name: 'Раскрой по-умолчанию',
+        customer: '',
+        workOrder: '',
         sheets: [], // Initially empty
         scheduledParts: [],
         settings: {
             availableSheets: [
-                { id: defaultSheetId, width: 2500, height: 1250, material: 'St-3', thickness: 1.0, quantity: 100 }
+                { id: defaultSheetId, width: 2500, height: 1250, material: 'St-3', thickness: 1.0, quantity: 10, cost: 0 }
             ],
             activeSheetId: defaultSheetId,
             partSpacingX: 5,
@@ -259,7 +408,31 @@ export const initialNests: NestLayout[] = [
             clampPositions: [300, 1000, 2000],
             nestUnderClamps: false,
             useCommonLine: false,
-            vertexSnapping: true
+            vertexSnapping: true,
+            utilizationStrategy: SheetUtilizationStrategy.ListedOrder
         }
     }
 ];
+
+export const defaultMachineSettings: MachineSettings = {
+    name: 'Finn-Power C5',
+    xTravelMax: 2542,
+    xTravelMin: -42,
+    yTravelMax: 1285,
+    yTravelMin: -25,
+    clampProtectionZoneX: 100,
+    clampProtectionZoneY: 50,
+    deadZoneY: 40,
+    maxSlewSpeed: 80, // m/min
+    turretRotationSpeed: 30 // rpm
+};
+
+export const defaultOptimizerSettings: OptimizerSettings = {
+    toolSequence: 'station-order',
+    pathOptimization: 'shortest-path',
+    startCorner: 'bottom-right',
+    enableCommonLineCuts: true,
+    prioritizeContourTools: true,
+    sheetUnloadMode: 'manual',
+    useG76LinearPatterns: false
+};

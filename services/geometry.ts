@@ -1,3 +1,4 @@
+
 import { Part, Point, SnapMode, PartGeometry, DxfEntity, PlacedPart, Tool, ToolShape, PartProfile } from '../types';
 
 /**
@@ -101,11 +102,6 @@ const segmentIntersectsGeometry = (p1: Point, p2: Point, entities: DxfEntity[]):
         // Standard line-line intersection
         const det = (p2.x - p1.x) * (b.y - a.y) - (p2.y - p1.y) * (b.x - a.x);
         if (det === 0) return false;
-        const lambda = ((b.x - a.x) * (b.y - a.y) - (b.y - a.y) * (b.x - a.x)) / det; // Error in standard formula?
-        // Using standard:
-        // Line1: P1 + t(P2-P1), Line2: A + u(B-A)
-        // t = ((A.x-P1.x)(B.y-A.y) - (A.y-P1.y)(B.x-A.x)) / det
-        // u = ((A.x-P1.x)(P2.y-P1.y) - (A.y-P1.y)(P2.x-P1.x)) / det
         
         const denominator = ((p2.x - p1.x) * (b.y - a.y)) - ((p2.y - p1.y) * (b.x - a.x));
         if (denominator === 0) return false;
@@ -291,9 +287,9 @@ export interface SnapResult {
 
 const degreesToRadians = (degrees: number) => degrees * (Math.PI / 180);
 
-const normalize = (p: Point, height: number, bbox: PartGeometry['bbox']) => ({
+const normalize = (p: Point, bbox: PartGeometry['bbox']) => ({
     x: p.x - bbox.minX,
-    y: height - (p.y - bbox.minY)
+    y: p.y - bbox.minY // Y-Up: Simple shift
 });
 
 const polygonArea = (vertices: Point[]): number => {
@@ -319,7 +315,7 @@ const polygonCenter = (vertices: Point[]): Point => {
 const distanceSq = (p1: Point, p2: Point) => (p1.x - p2.x)**2 + (p1.y - p2.y)**2;
 
 export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null => {
-    const { entities, bbox, height } = part.geometry;
+    const { entities, bbox } = part.geometry;
     if (!entities || !bbox) return null;
 
     const vertices: Point[] = [];
@@ -328,15 +324,15 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
     entities.forEach(entity => {
         switch(entity.type) {
             case 'LINE': {
-                const p1 = normalize(entity.start, height, bbox);
-                const p2 = normalize(entity.end, height, bbox);
+                const p1 = normalize(entity.start, bbox);
+                const p2 = normalize(entity.end, bbox);
                 vertices.push(p1, p2);
                 segments.push({ p1, p2, type: 'line', originalEntity: entity });
                 break;
             }
             case 'LWPOLYLINE': {
                 if (entity.vertices.length < 2) break;
-                const points = entity.vertices.map(v => normalize(v, height, bbox));
+                const points = entity.vertices.map(v => normalize(v, bbox));
                 for(let i = 0; i < points.length - 1; i++) {
                     vertices.push(points[i]);
                     segments.push({ p1: points[i], p2: points[i+1], type: 'line', originalEntity: entity });
@@ -352,9 +348,9 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
                 const endRad = degreesToRadians(entity.endAngle);
                 const p1_raw = { x: entity.center.x + entity.radius * Math.cos(startRad), y: entity.center.y + entity.radius * Math.sin(startRad) };
                 const p2_raw = { x: entity.center.x + entity.radius * Math.cos(endRad), y: entity.center.y + entity.radius * Math.sin(endRad) };
-                const p1 = normalize(p1_raw, height, bbox);
-                const p2 = normalize(p2_raw, height, bbox);
-                const center = normalize(entity.center, height, bbox);
+                const p1 = normalize(p1_raw, bbox);
+                const p2 = normalize(p2_raw, bbox);
+                const center = normalize(entity.center, bbox);
                 vertices.push(p1, p2);
                 segments.push({ p1, p2, type: 'arc', radius: entity.radius, center, originalEntity: entity });
                 break;
@@ -362,12 +358,12 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
             case 'CIRCLE': {
                 const r = entity.radius;
                 const c = entity.center;
-                const center = normalize(c, height, bbox);
+                const center = normalize(c, bbox);
                 const points_raw = [
                     {x: c.x + r, y: c.y}, {x: c.x, y: c.y + r},
                     {x: c.x - r, y: c.y}, {x: c.x, y: c.y - r},
                 ];
-                const points = points_raw.map(p => normalize(p, height, bbox));
+                const points = points_raw.map(p => normalize(p, bbox));
                 vertices.push(...points);
                 for (let i = 0; i < points.length; i++) {
                     segments.push({p1: points[i], p2: points[(i+1) % 4], type: 'arc', radius: r, center, originalEntity: entity });
@@ -381,11 +377,11 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
     entities.forEach(entity => {
         if (entity.type === 'CIRCLE') {
             contours.push({
-                center: normalize(entity.center, height, bbox),
+                center: normalize(entity.center, bbox),
                 area: Math.PI * entity.radius**2,
             });
         } else if (entity.type === 'LWPOLYLINE' && entity.closed && entity.vertices.length > 2) {
-            const normalizedVertices = entity.vertices.map(v => normalize(v, height, bbox));
+            const normalizedVertices = entity.vertices.map(v => normalize(v, bbox));
             contours.push({
                 center: polygonCenter(normalizedVertices),
                 area: polygonArea(normalizedVertices),
@@ -397,7 +393,7 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
     contours.forEach(c => allShapeCenters.set(`${c.center.x.toFixed(3)},${c.center.y.toFixed(3)}`, c.center));
     entities.forEach(entity => {
         if (entity.type === 'ARC') {
-            const center = normalize(entity.center, height, bbox);
+            const center = normalize(entity.center, bbox);
             allShapeCenters.set(`${center.x.toFixed(3)},${center.y.toFixed(3)}`, center);
         }
     });
@@ -582,15 +578,15 @@ export const detectPartProfile = (geometry: PartGeometry): PartProfile => {
 
     if (entities.length === 0) return { type: 'flat', orientation: 'vertical', dims: { a: width, b: 0, c: 0 } };
 
-    const toSvgY = (rawY: number) => height - (rawY - bbox.minY);
+    const toSvgY = (rawY: number) => rawY - bbox.minY; // Y-Up: Simple shift
     const toSvgX = (rawX: number) => rawX - bbox.minX;
 
     // Check zones
     const MIN_DEPTH = 0.5;
     const MAX_DEPTH = 50.0;
 
-    const topZone = { min: MIN_DEPTH, max: MAX_DEPTH };
-    const bottomZone = { min: height - MAX_DEPTH, max: height - MIN_DEPTH };
+    const topZone = { min: height - MAX_DEPTH, max: height - MIN_DEPTH }; // Top is High Y in Y-Up
+    const bottomZone = { min: MIN_DEPTH, max: MAX_DEPTH }; // Bottom is Low Y
     const leftZone = { min: MIN_DEPTH, max: MAX_DEPTH };
     const rightZone = { min: width - MAX_DEPTH, max: width - MIN_DEPTH };
 

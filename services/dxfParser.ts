@@ -1,3 +1,4 @@
+
 import { DxfEntity, Point } from '../types';
 
 /**
@@ -106,7 +107,7 @@ const degreesToRadians = (degrees: number) => degrees * (Math.PI / 180);
 
 /**
  * Converts an array of parsed DXF entities into a single SVG path string.
- * Normalizes all coordinates to the top-left and flips the Y-axis for SVG.
+ * Coordinates are normalized to (0,0) at Bottom-Left (Y-Up Cartesian).
  */
 export const dxfEntitiesToSvg = (entities: DxfEntity[]): { path: string, width: number, height: number, bbox: { minX: number, minY: number, maxX: number, maxY: number } } => {
     if (entities.length === 0) {
@@ -159,14 +160,10 @@ export const dxfEntitiesToSvg = (entities: DxfEntity[]): { path: string, width: 
                 
                 // Add cardinal points if within arc sweep
                 for (let deg = 0; deg <= 360; deg += 90) {
-                     // normalize angles to verify containment
-                     // Simple check: iterate small steps or handle quadrants. 
-                     // Accurate bbox for arc is complex, this is a "good enough" approximation for rendering views
                      if (deg > startAngle && deg < endAngle) {
                          points.push({ x: center.x + r * Math.cos(degreesToRadians(deg)), y: center.y + r * Math.sin(degreesToRadians(deg))});
                      }
                 }
-                // Also check min/max points of circle equation (0, 90, 180, 270) if they lie within arc
 
                 points.forEach(p => {
                     minX = Math.min(minX, p.x);
@@ -178,17 +175,15 @@ export const dxfEntitiesToSvg = (entities: DxfEntity[]): { path: string, width: 
         }
     });
     
-    // Use exact bounds without padding to ensure Nesting logic (Common Line) works with 0 gap.
-    // Visual padding for rendering is handled by the CanvasArea viewBox.
-    const padding = 0; 
-    const bbox = { minX: minX - padding, minY: minY - padding, maxX: maxX + padding, maxY: maxY + padding };
-    const width = bbox.maxX - bbox.minX;
-    const height = bbox.maxY - bbox.minY;
+    // Exact bounds
+    const bbox = { minX, minY, maxX, maxY };
+    const width = maxX - minX;
+    const height = maxY - minY;
     
+    // Normalize logic: Shift so (minX, minY) -> (0, 0). Preserve Y-Up.
     const normalize = (p: Point) => ({
         x: p.x - bbox.minX,
-        // Flip Y for SVG: SVG Y increases downwards. World Y increases upwards.
-        y: height - (p.y - bbox.minY)
+        y: p.y - bbox.minY
     });
 
     const pathDataParts: string[] = [];
@@ -220,12 +215,6 @@ export const dxfEntitiesToSvg = (entities: DxfEntity[]): { path: string, width: 
                 const startAngle = entity.startAngle;
                 const endAngle = entity.endAngle;
 
-                // Note: SVG arcs and DXF arcs involve angles. 
-                // We must account for the Y-flip in SVG which reverses rotation direction (CW vs CCW).
-                // DXF: CCW is positive. SVG with Y-flip: effectively CW on screen if using standard sin/cos?
-                // Actually, since we normalize points using (height - y), the geometry is mirrored vertically.
-                // A CCW arc in world coords becomes a CW arc in SVG coords unless we adjust sweep flag.
-
                 const startRad = degreesToRadians(startAngle);
                 const endRad = degreesToRadians(endAngle);
 
@@ -245,12 +234,7 @@ export const dxfEntitiesToSvg = (entities: DxfEntity[]): { path: string, width: 
                 if (angleSpan < 0) angleSpan += 360;
                 
                 const largeArcFlag = angleSpan > 180 ? 1 : 0;
-                // Due to Y-flip coordinate transform, sweep flag usually needs inversion or careful checking.
-                // Standard: 0 for "small way", but direction matters.
-                // DXF goes Start -> End CCW. 
-                // If we map to SVG, Start is physically "below" End if angle is 0->90.
-                // Visual test suggests sweepFlag 0 is often correct for this transform logic, but let's stick to standard 0.
-                const sweepFlag = 0; 
+                const sweepFlag = 1; // Standard Cartesian Counter-Clockwise
                 
                 pathDataParts.push(`M ${startPoint.x.toFixed(3)} ${startPoint.y.toFixed(3)} A ${arcRadius.toFixed(3)} ${arcRadius.toFixed(3)} 0 ${largeArcFlag} ${sweepFlag} ${endPoint.x.toFixed(3)} ${endPoint.y.toFixed(3)}`);
                 break;

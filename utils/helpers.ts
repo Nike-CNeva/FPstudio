@@ -41,7 +41,7 @@ export const getPartBaseName = (currentName: string): string => {
 
 /**
  * Generates a standard part name based on profile and dimensions.
- * Format: BaseName_hTop x hCenter x hBottom x wLeft x wCenter x wRight
+ * Format: BaseName_wLeft x wCenter x wRight x hTop x hCenter x hBottom
  * Only non-zero dimensions are included.
  */
 export const generatePartNameFromProfile = (
@@ -85,8 +85,8 @@ export const generatePartNameFromProfile = (
         wCenter = width;
     }
 
-    // Order: hTop, hCenter, hBottom, wLeft, wCenter, wRight
-    const values = [hTop, hCenter, hBottom, wLeft, wCenter, wRight];
+    // Order: wLeft, wCenter, wRight, hTop, hCenter, hBottom (Width x Height)
+    const values = [wLeft, wCenter, wRight, hTop, hCenter, hBottom];
     
     // Filter non-zero values, round them
     const dimStr = values
@@ -95,7 +95,7 @@ export const generatePartNameFromProfile = (
         .join('x');
     
     // Fallback if something went wrong (e.g. 0 sizes)
-    const finalSuffix = dimStr || `${Math.round(height)}x${Math.round(width)}`;
+    const finalSuffix = dimStr || `${Math.round(width)}x${Math.round(height)}`;
 
     return `${baseName}_${finalSuffix}`;
 };

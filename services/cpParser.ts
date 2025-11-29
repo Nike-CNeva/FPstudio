@@ -22,12 +22,6 @@ const findOrCreateTool = (name: string, library: Tool[]): Tool => {
             width = parseFloat(dims[1]);
             height = parseFloat(dims[2]);
         }
-        // Ensure Horizontal Default (W > H)
-        if (width < height) {
-            const temp = width;
-            width = height;
-            height = temp;
-        }
     } else if (upperName.includes('RND') || upperName.includes('RO')) {
         shape = ToolShape.Circle;
         const dim = upperName.match(/(\d+)/);
@@ -38,12 +32,6 @@ const findOrCreateTool = (name: string, library: Tool[]): Tool => {
         if (dims) {
             width = parseFloat(dims[1]);
             height = parseFloat(dims[2]);
-        }
-        // Ensure Horizontal Default
-        if (width < height) {
-            const temp = width;
-            width = height;
-            height = temp;
         }
     }
 
@@ -88,101 +76,39 @@ const normalizeVec = (v: Point) => {
 };
 
 /**
- * Determines SVG Arc parameters (Large Arc, Sweep) based on Tangent Continuity.
- * We use the RAW coordinates (Y-Up) to determine winding, then map to SVG.
+ * Determines SVG Arc parameters (Large Arc, Sweep).
+ * Enforces strictly Positive (CCW) winding for ALL contours to resolve ambiguity between short/long arcs.
+ * This assumes the CP file defines points in a consistent CCW order for valid material boundaries.
  */
 const calculateArcParams = (
     prev: Point, 
     start: Point, 
     center: Point, 
-    end: Point,
-    contourType: number // 8 (Outer), 9 (Inner)
+    end: Point
 ): { largeArc: number, sweep: number, radius: number } => {
     
     const radius = Math.sqrt(Math.pow(start.x - center.x, 2) + Math.pow(start.y - center.y, 2));
     
-    // 1. Incoming Vector
-    let vIn = { x: start.x - prev.x, y: start.y - prev.y };
-    
-    // If this is the first segment (vIn is zero), deduce direction from Contour Type
-    // Outer (8) is usually CCW. Inner (9) is CW.
-    // We can construct a fake vIn perpendicular to Radius to force that winding?
-    // Better: If no history, use Shortest Arc logic + Contour Winding preference.
-    const hasHistory = Math.abs(vIn.x) > 0.001 || Math.abs(vIn.y) > 0.001;
+    // Always assume Counter-Clockwise (CCW) traversal in World Coordinates
+    // This fixes "Long Arc" issues by forcing the delta to be positive.
+    const isCCW = true;
 
-    // 2. Radial Vector at Start
-    const vRad = { x: start.x - center.x, y: start.y - center.y };
-    
-    // 3. Tangent Vectors (perpendicular to Radius)
-    // CCW Tangent: (-y, x)
-    const tanCCW = { x: -vRad.y, y: vRad.x };
-    // CW Tangent: (y, -x)
-    const tanCW = { x: vRad.y, y: -vRad.x };
-    
-    let isCCW = true;
-
-    if (hasHistory) {
-        // Tangent Continuity: Which direction matches incoming vector?
-        const dotCCW = dot(vIn, tanCCW);
-        const dotCW = dot(vIn, tanCW);
-        
-        // If dotCCW > dotCW, we are turning CCW.
-        isCCW = dotCCW >= dotCW;
-    } else {
-        // Fallback: Use Shortest Path, breaking ties with Contour Type
-        // Calculate Cross Product of Start->End to find "Geometric Left/Right"
-        const vSE = { x: end.x - start.x, y: end.y - start.y };
-        // Cross: (Sx-Cx)(Ey-Cy) - ... is for sweep. 
-        // Simpler: Cross Product of (Start-Center) and (End-Center)
-        const cp = (start.x - center.x)*(end.y - center.y) - (start.y - center.y)*(end.x - center.x);
-        
-        // If CP > 0, End is "Left" (CCW) of Start.
-        // If Contour is 8 (Outer/CCW), we prefer CCW.
-        // This is heuristics. Assuming Short Arc for start is safer.
-        const geometricIsCCW = cp > 0;
-        
-        // If the geometric short path aligns with contour type, great.
-        // If not, we might be starting on a reflex corner? Unlikely.
-        // Let's stick to Geometric Shortest for safety without tangent history.
-        isCCW = geometricIsCCW;
-    }
-
-    // 4. Calculate Angles and Delta based on Decision
+    // Calculate Angles
     const angStart = Math.atan2(start.y - center.y, start.x - center.x);
     const angEnd = Math.atan2(end.y - center.y, end.x - center.x);
     
     let delta = angEnd - angStart;
-    // Normalize delta to -PI...PI? No, 0...2PI or -2PI...0
     
-    if (isCCW) {
-        // We need positive delta
-        while (delta <= 0) delta += 2 * Math.PI;
-        while (delta > 2 * Math.PI) delta -= 2 * Math.PI;
-    } else {
-        // We need negative delta
-        while (delta >= 0) delta -= 2 * Math.PI;
-        while (delta < -2 * Math.PI) delta += 2 * Math.PI;
-    }
+    // Normalize delta to be positive (0 to 2PI)
+    while (delta <= 0) delta += 2 * Math.PI;
     
     const largeArc = Math.abs(delta) > Math.PI ? 1 : 0;
     
-    // 5. Map to SVG Flags
-    // SVG Y is inverted.
-    // World CCW (+Angle) -> SVG CW (-Angle relative to inverted Y).
-    // SVG Sweep 0 = Negative Angle (CCW visual in standard SVG, which matches World CCW).
-    // SVG Sweep 1 = Positive Angle.
-    
-    // Verification:
-    // World (X, Y_up). CCW is X -> Y.
-    // SVG (X, Y_down). X -> Y_down is Clockwise visually.
-    // But SVG Arc Sweep 0 is "Counter Clockwise". 
-    // Does SVG "Counter Clockwise" mean moving against the clock on the screen?
-    // Yes. On screen (Y-down), CCW goes X -> Top(negative Y).
-    // World CCW goes X -> Top(positive Y).
-    // So World CCW maps to SVG CCW (Sweep 0).
-    // Let's trust: World CCW -> Sweep 0. World CW -> Sweep 1.
-    
-    const sweep = isCCW ? 0 : 1;
+    // Map to SVG Flags
+    // Standard CP/NC World coordinates: Y-Up.
+    // SVG coordinates: Y-Down.
+    // World CCW (+Angle) maps to SVG Sweep 0 (Counter-Clockwise visual in Y-Down).
+    const sweep = 0;
 
     return { largeArc, sweep, radius };
 };
@@ -231,7 +157,6 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
     });
 
     let svgPath = "";
-    let currentContourType = 8; // Default Outer
     
     // Store entities for script generation (Raw Coordinates)
     const entities: DxfEntity[] = [];
@@ -245,11 +170,9 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
 
         if (pt.flag === 9 || pt.flag === 8) {
             svgPath += `M ${n.x.toFixed(3)} ${n.y.toFixed(3)} `;
-            currentContourType = pt.flag;
         } else if (pt.flag === 0) {
             // NOTE: If previous point was an Arc Center (-1), this point (End of Arc)
             // was already reached by the Arc command. 
-            // Do NOT draw a Line from Center, and do not add a zero-length Line command.
             if (prevRaw && prevRaw.flag !== -1) {
                 svgPath += `L ${n.x.toFixed(3)} ${n.y.toFixed(3)} `;
                 entities.push({
@@ -265,15 +188,14 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
                 const centerRaw = pt;
                 const endRaw = geometryPoints[i+1];
                 
-                // Get 'Prev' for tangent continuity (i-2)
-                // If i-1 was a Move (flag 8/9), there is no prev vector, use startRaw as dummy
+                // Get 'Prev' for tangent continuity (i-2) is not needed with strict winding
                 let prevRawForTan = startRaw;
                 if (i > 1 && geometryPoints[i-1].flag === 0) {
                     prevRawForTan = geometryPoints[i-2];
                 }
 
                 // Calculate in RAW coordinates (World Y-Up) for correct winding logic
-                const { largeArc, sweep, radius } = calculateArcParams(prevRawForTan, startRaw, centerRaw, endRaw, currentContourType);
+                const { largeArc, sweep, radius } = calculateArcParams(prevRawForTan, startRaw, centerRaw, endRaw);
                 
                 const endN = normalize(endRaw.x, endRaw.y);
                 
@@ -327,7 +249,9 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
             }
         } else if (line.startsWith('ROTATION')) {
             if (i + 1 < lines.length) {
-                currentRotation = parseFloat(lines[i+1]) || 0;
+                // Negate rotation to match visualization coordinate system
+                // (CP rotation likely CW or Y-based, Vis uses CCW)
+                currentRotation = -(parseFloat(lines[i+1]) || 0);
                 i++;
             }
         } else if (line.startsWith('STRIKE')) {

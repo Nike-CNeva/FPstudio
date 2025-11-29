@@ -24,12 +24,39 @@ const stations = Array.from({ length: 20 }, (_, i) => {
     return { id, type, angle };
 });
 
-const mtSlots = Array.from({ length: 20 }, (_, i) => {
+// Create 24 slots for MT
+const mtSlots = Array.from({ length: 24 }, (_, i) => {
     const id = i + 1;
-    // Place slots in 2 concentric rings for visualization
-    const radius = id <= 10 ? 30 : 60;
-    const angle = (360 / 10) * (id - 1) - 90;
-    return { id, angle, radius };
+    // Slots 1-12 are Outer Ring
+    // Slots 13-24 are Inner Ring
+    
+    let isInner = false;
+    let indexInRing = 0;
+    
+    if (id <= 12) {
+        // Outer Ring: 1 to 12
+        isInner = false;
+        indexInRing = id - 1;
+    } else {
+        // Inner Ring: 13 to 24
+        isInner = true;
+        indexInRing = id - 13;
+    }
+
+    // New Radius settings: Outer closer to edge (200), Inner offset towards center (140)
+    const radius = isInner ? 140 : 200;
+    
+    // Angular logic: 
+    // Outer Ring: 0, 30, 60... (CCW negative in SVG trig usually implies visual CCW if Y is up, but standard trig in SVG coords varies).
+    // Let's assume standard position: 0 is Right (3 o'clock).
+    // Stagger: Inner ring shifted by half a step (15 degrees)
+    
+    let angleDeg = - (indexInRing * 30); // Base angle
+    if (isInner) {
+        angleDeg -= 15; // Shift inner ring
+    }
+    
+    return { id, angle: angleDeg, radius, isInner };
 });
 
 export const TurretViewModal: React.FC<TurretViewModalProps> = ({ tools, setTools, layouts, setLayouts, onClose }) => {
@@ -47,19 +74,12 @@ export const TurretViewModal: React.FC<TurretViewModalProps> = ({ tools, setTool
     const loadLayout = (layoutId: string) => {
         const layout = layouts.find(l => l.id === layoutId);
         if (!layout) return;
-        
-        // Replace current tools state with the snapshot from layout
-        // Note: This replaces the entire tool library state in this simplified implementation.
-        // In a real app, we might only update station assignments of existing tools by ID.
-        // Here we assume the layout snapshot is the source of truth for the library when loaded.
         setTools(layout.toolsSnapshot);
         setActiveLayoutId(layoutId);
     };
 
     const saveLayout = () => {
         if (!newLayoutName.trim()) return;
-
-        // Get stations from the currently active layout to preserve configuration
         const currentLayout = layouts.find(l => l.id === activeLayoutId) || layouts[0];
         const currentStations = currentLayout ? currentLayout.stations : [];
 
@@ -98,19 +118,14 @@ export const TurretViewModal: React.FC<TurretViewModalProps> = ({ tools, setTool
     const handleMountTool = (tool: Tool, mtIndex?: number) => {
         if (!selectedStation) return;
 
-        // Unmount tool currently in this slot if any
         const updatedTools = tools.map(t => {
-            // Check collision
             if (t.stationNumber === selectedStation) {
-                // If MT view, check index
                 if (isMtView) {
                     if (t.mtIndex === mtIndex) return { ...t, stationNumber: 0, mtIndex: 0 };
                 } else {
-                    // Main turret view, unmount whatever is there (unless it's an MT station with tools inside, complex logic skipped for brevity)
                     return { ...t, stationNumber: 0, mtIndex: 0 };
                 }
             }
-            // Prepare the tool being mounted
             if (t.id === tool.id) {
                 return { ...t, stationNumber: selectedStation, mtIndex: mtIndex || 0 };
             }
@@ -136,10 +151,9 @@ export const TurretViewModal: React.FC<TurretViewModalProps> = ({ tools, setTool
                 const x = Math.cos(rad) * 250;
                 const y = Math.sin(rad) * 250;
                 
-                // For station 1 (MT), we might have multiple tools. Just show indicator if any exist.
                 const assignedTools = toolsOnTurret.filter(t => t.stationNumber === s.id);
                 const hasTools = assignedTools.length > 0;
-                const isMT = s.id === 1; // Simplified MT check based on requirement
+                const isMT = s.id === 1; 
 
                 return (
                     <g key={s.id} transform={`translate(${x}, ${y})`} onClick={() => handleStationClick(s.id)} className="cursor-pointer hover:opacity-80">
@@ -152,7 +166,7 @@ export const TurretViewModal: React.FC<TurretViewModalProps> = ({ tools, setTool
                              <g transform="scale(0.8)"><ToolSvg tool={assignedTools[0]} /></g>
                         )}
                         {isMT && hasTools && (
-                             <text y="15" textAnchor="middle" className="text-[8px] fill-white">{assignedTools.length}/20</text>
+                             <text y="15" textAnchor="middle" className="text-[8px] fill-white">{assignedTools.length}/24</text>
                         )}
                     </g>
                 );
@@ -161,29 +175,71 @@ export const TurretViewModal: React.FC<TurretViewModalProps> = ({ tools, setTool
     );
 
     const renderMultiToolView = () => (
-         <svg width="100%" height="100%" viewBox="-150 -150 300 300">
-            <circle r="140" fill="#e9d8fd" stroke="#805ad5" strokeWidth="5" />
-            <text x="0" y="-10" textAnchor="middle" className="fill-purple-900 text-lg font-bold">Multi-Tool</text>
-            <text x="0" y="10" textAnchor="middle" className="fill-purple-700 text-sm">Station 1</text>
+         <svg width="100%" height="100%" viewBox="-250 -250 500 500">
+            <defs>
+                <radialGradient id="greenTool" cx="30%" cy="30%" r="70%">
+                    <stop offset="0%" stopColor="#81e6d9" />
+                    <stop offset="100%" stopColor="#2c7a7b" />
+                </radialGradient>
+                <filter id="dropshadow" height="130%">
+                    <feGaussianBlur in="SourceAlpha" stdDeviation="2"/> 
+                    <feOffset dx="1" dy="2" result="offsetblur"/>
+                    <feComponentTransfer>
+                        <feFuncA type="linear" slope="0.3"/>
+                    </feComponentTransfer>
+                    <feMerge> 
+                        <feMergeNode/>
+                        <feMergeNode in="SourceGraphic"/> 
+                    </feMerge>
+                </filter>
+            </defs>
 
+            {/* Background Plate */}
+            <circle r="230" fill="#edf2f7" stroke="#718096" strokeWidth="2" />
+            <circle r="170" fill="none" stroke="#cbd5e0" strokeWidth="1" />
+            
+            <text x="0" y="0" textAnchor="middle" className="fill-gray-500 text-sm font-bold">1 - Multi-tool turret</text>
+
+            {/* Connecting lines for outer/inner labels */}
             {mtSlots.map(slot => {
                  const rad = (slot.angle * Math.PI) / 180;
-                 const x = Math.cos(rad) * slot.radius * 1.5; // Scale out
-                 const y = Math.sin(rad) * slot.radius * 1.5;
+                 const x = Math.cos(rad) * slot.radius;
+                 const y = Math.sin(rad) * slot.radius;
                  
                  const assignedTool = toolsOnTurret.find(t => t.stationNumber === 1 && t.mtIndex === slot.id);
+                 
+                 // Label Position
+                 // Outer labels further out (230+), Inner labels closer in (100) or using lines
+                 const labelR = slot.isInner ? 110 : 240;
+                 const lx = Math.cos(rad) * labelR;
+                 const ly = Math.sin(rad) * labelR;
 
                  return (
-                    <g key={slot.id} transform={`translate(${x}, ${y})`}>
-                        <circle r="12" fill={assignedTool ? "#4299e1" : "#fff"} stroke="#805ad5" strokeWidth="1" />
-                        <text y="0" dy="3" textAnchor="middle" className="text-[8px] fill-gray-800 font-bold">{slot.id}</text>
-                         {/* Hit area for drop */}
-                         <circle r="12" fill="transparent" className="cursor-pointer" onClick={() => { /* Just select for info? */ }} />
-                         
-                         {/* Simple visual for tool */}
-                         {assignedTool && (
-                            <title>{assignedTool.name}</title>
-                         )}
+                    <g key={slot.id}>
+                        {/* Connecting Line */}
+                        <line x1={lx} y1={ly} x2={x} y2={y} stroke="#a0aec0" strokeWidth="1" />
+                        
+                        {/* Tool Slot */}
+                        <g transform={`translate(${x}, ${y})`}>
+                            {assignedTool ? (
+                                <g>
+                                    <circle r="20" fill="url(#greenTool)" filter="url(#dropshadow)" stroke="#234e52" strokeWidth="1" />
+                                    <text y="3" textAnchor="middle" className="text-[7px] fill-white font-bold pointer-events-none">
+                                        {assignedTool.name.replace(/_MT/,'')}
+                                    </text>
+                                </g>
+                            ) : (
+                                <circle r="18" fill="#e2e8f0" stroke="#cbd5e0" strokeWidth="1" />
+                            )}
+                            
+                            {/* Hit area */}
+                            <circle r="20" fill="transparent" className="cursor-pointer" onClick={() => { /* select logic */ }} >
+                                <title>Slot {slot.id}</title>
+                            </circle>
+                        </g>
+
+                        {/* Number Label */}
+                        <text x={lx} y={ly + 4} textAnchor="middle" className="text-xs font-bold fill-gray-800">{slot.id}</text>
                     </g>
                  )
             })}
@@ -194,7 +250,6 @@ export const TurretViewModal: React.FC<TurretViewModalProps> = ({ tools, setTool
         <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-50">
              <div className="bg-gray-800 rounded-lg shadow-xl w-[95vw] h-[90vh] flex flex-col">
                 
-                {/* Header & Layout Controls */}
                 <div className="flex justify-between items-center p-4 border-b border-gray-700 bg-gray-900">
                     <div className="flex items-center space-x-4">
                         <h2 className="text-xl font-bold text-white">Управление Револьвером</h2>
@@ -205,65 +260,19 @@ export const TurretViewModal: React.FC<TurretViewModalProps> = ({ tools, setTool
                         >
                             {layouts.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
                         </select>
-                        <button onClick={() => deleteLayout(activeLayoutId)} className="text-red-400 hover:text-red-300"><TrashIcon className="w-5 h-5"/></button>
                     </div>
-                    <div className="flex items-center space-x-2">
-                        <input 
-                            type="text" 
-                            placeholder="Название новой конфигурации" 
-                            value={newLayoutName}
-                            onChange={e => setNewLayoutName(e.target.value)}
-                            className="bg-gray-700 text-white px-2 py-1 rounded border border-gray-600 text-sm"
-                        />
-                        <button onClick={saveLayout} className="bg-green-600 hover:bg-green-500 text-white px-3 py-1 rounded text-sm flex items-center">
-                            <SaveIcon className="w-4 h-4 mr-1"/> Сохранить
-                        </button>
-                        <button onClick={onClose} className="ml-4 text-gray-400 hover:text-white text-2xl">&times;</button>
-                    </div>
+                    <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl">&times;</button>
                 </div>
                 
                 <div className="flex-1 flex overflow-hidden">
-                    
-                    {/* Left Panel: Visualization */}
-                    <div className="flex-1 relative bg-gray-200">
+                    <div className="flex-1 relative bg-gray-200 overflow-auto flex items-center justify-center">
                         {isMtView ? (
-                            <div className="w-full h-full flex flex-col">
+                            <div className="w-full h-full flex flex-col relative">
                                 <button onClick={() => setIsMtView(false)} className="absolute top-4 left-4 bg-gray-600 text-white px-3 py-1 rounded shadow z-10">
-                                    &larr; Назад к револьверу
+                                    &larr; Назад
                                 </button>
-                                <div className="flex-1 p-4">
-                                     {/* MT Manager View - List of 20 slots */}
-                                     <div className="grid grid-cols-4 gap-4 h-full overflow-y-auto p-8">
-                                        {mtSlots.map(slot => {
-                                            const assignedTool = toolsOnTurret.find(t => t.stationNumber === 1 && t.mtIndex === slot.id);
-                                            return (
-                                                <div key={slot.id} className="bg-white border border-gray-300 rounded p-2 flex flex-col items-center shadow-sm">
-                                                    <span className="font-bold text-purple-700 mb-2">Слот {slot.id}</span>
-                                                    {assignedTool ? (
-                                                        <div className="flex flex-col items-center">
-                                                            <div className="w-10 h-10 mb-1"><ToolPreview tool={assignedTool} /></div>
-                                                            <span className="text-xs text-center font-semibold truncate w-full">{assignedTool.name}</span>
-                                                            <button onClick={() => handleUnmountTool(assignedTool.id)} className="text-red-500 text-xs mt-1 hover:underline">Снять</button>
-                                                        </div>
-                                                    ) : (
-                                                        <div className="text-xs text-gray-400 italic py-4">Пусто</div>
-                                                    )}
-                                                    {/* Drop zone concept: user selects tool from right, then clicks here to mount */}
-                                                    {!assignedTool && (
-                                                         <button 
-                                                            className="mt-2 text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200"
-                                                            // Simple interaction: Clicking this sets it as target for next library click? 
-                                                            // Or better: dragging. For now, let's assume drag/drop is complex, 
-                                                            // so we use a two-step process: Select Tool -> Click "Mount to Slot X" button?
-                                                            // Or: Just show "Mount" buttons on the right list if a slot is "active".
-                                                         >
-                                                            ...
-                                                         </button>
-                                                    )}
-                                                </div>
-                                            )
-                                        })}
-                                     </div>
+                                <div className="flex-1">
+                                     {renderMultiToolView()}
                                 </div>
                             </div>
                         ) : (
@@ -271,17 +280,12 @@ export const TurretViewModal: React.FC<TurretViewModalProps> = ({ tools, setTool
                         )}
                     </div>
 
-                    {/* Right Panel: Tool Library & Slot Info */}
+                    {/* Right Panel */}
                     <div className="w-80 bg-gray-700 flex flex-col border-l border-gray-600">
                         <div className="p-4 border-b border-gray-600 bg-gray-800">
                             <h3 className="font-bold text-gray-200">
                                 {isMtView ? `Multi-Tool (Станция 1)` : (selectedStation ? `Станция ${selectedStation}` : 'Выберите станцию')}
                             </h3>
-                            <p className="text-xs text-gray-400 mt-1">
-                                {isMtView 
-                                    ? "Выберите инструмент из списка справа и укажите номер слота (1-20) для установки." 
-                                    : "Выберите инструмент из списка для установки в текущую станцию."}
-                            </p>
                         </div>
 
                         <div className="flex-1 overflow-y-auto p-2 space-y-2">
@@ -296,14 +300,11 @@ export const TurretViewModal: React.FC<TurretViewModalProps> = ({ tools, setTool
                                         </div>
                                     </div>
                                     
-                                    {/* Mount Actions */}
                                     <div className="mt-2 flex flex-wrap gap-1">
                                         {isMtView ? (
-                                            // Show mini buttons for slots 1-20? Too many.
-                                            // Show input for slot?
                                             <div className="flex items-center space-x-2 w-full bg-gray-800 p-1 rounded">
                                                  <span className="text-[10px]">Слот:</span>
-                                                 <input type="number" min="1" max="20" defaultValue="1" id={`slot-input-${tool.id}`} className="w-10 text-black text-xs px-1" />
+                                                 <input type="number" min="1" max="24" defaultValue="1" id={`slot-input-${tool.id}`} className="w-10 text-black text-xs px-1" />
                                                  <button 
                                                     onClick={() => {
                                                         const val = (document.getElementById(`slot-input-${tool.id}`) as HTMLInputElement).value;
@@ -317,7 +318,7 @@ export const TurretViewModal: React.FC<TurretViewModalProps> = ({ tools, setTool
                                         ) : (
                                             <button 
                                                 onClick={() => handleMountTool(tool)}
-                                                disabled={!selectedStation || selectedStation === 1} // Can't mount standard tool to MT base directly in this simplified logic
+                                                disabled={!selectedStation || selectedStation === 1}
                                                 className="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs py-1 rounded disabled:opacity-50 disabled:cursor-not-allowed"
                                             >
                                                 {selectedStation === 1 ? "Используйте режим MT" : (selectedStation ? "Установить" : "Сначала выберите станцию")}
@@ -326,10 +327,8 @@ export const TurretViewModal: React.FC<TurretViewModalProps> = ({ tools, setTool
                                     </div>
                                 </div>
                             ))}
-                            {availableTools.length === 0 && <p className="text-center text-gray-500 text-sm py-4">Нет доступных инструментов</p>}
                         </div>
                     </div>
-
                 </div>
              </div>
         </div>

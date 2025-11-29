@@ -65,6 +65,18 @@ interface CanvasAreaProps {
     onMoveNestPart?: (id: string, dx: number, dy: number) => void;
 }
 
+const GridDefs: React.FC = () => (
+    <defs>
+        <pattern id="smallGrid" width="10" height="10" patternUnits="userSpaceOnUse">
+            <path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(255, 255, 255, 0.05)" strokeWidth="0.5"/>
+        </pattern>
+        <pattern id="grid" width="100" height="100" patternUnits="userSpaceOnUse">
+            <rect width="100" height="100" fill="url(#smallGrid)"/>
+            <path d="M 100 0 L 0 0 0 100" fill="none" stroke="rgba(255, 255, 255, 0.15)" strokeWidth="1"/>
+        </pattern>
+    </defs>
+);
+
 export const CanvasArea: React.FC<CanvasAreaProps> = ({
     mode, activePart, processedGeometry, activeNest, currentNestSheet, tools, parts,
     svgRef, viewBox, setViewBox, isDragging, getPointFromEvent, panZoomHandlers,
@@ -87,6 +99,16 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
     const [draggingNestPartId, setDraggingNestPartId] = useState<string | null>(null);
     const lastDragPos = useRef<Point | null>(null);
 
+    // Coordinate Transform Helper for Y-Up Model
+    // When we use `scale(1, -1)` in SVG, positive Y in Model is negative Y in View.
+    // getPointFromEvent (standard SVG logic) will return coords relative to ViewBox.
+    // If we view `y=-100 to y=0`, it returns negative Y.
+    // Model Y = -View Y.
+    const getModelPoint = (e: MouseEvent<SVGSVGElement>): Point => {
+        const pt = getPointFromEvent(e);
+        return { x: pt.x, y: -pt.y }; // Invert Y from View to Model
+    };
+
     const handleZoomIn = () => {
         setViewBox(prev => ({
             x: prev.x + prev.width * 0.1, 
@@ -107,9 +129,11 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
 
     const handleFit = () => {
         if (mode === AppMode.PartEditor && activePart) {
+             // Model is Y-Up: 0 to H.
+             // View needs to be Y-flipped: -H to 0.
              setViewBox({
                 x: -5,
-                y: -5,
+                y: -activePart.geometry.height - 5, // Top (visual) is negative
                 width: activePart.geometry.width + 10,
                 height: activePart.geometry.height + 10
             });
@@ -123,12 +147,12 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
                  const stock = activeNest.settings.availableSheets.find(s => s.id === activeNest.settings.activeSheetId) || activeNest.settings.availableSheets[0];
                  if(stock) { width = stock.width; height = stock.height; }
              }
-             setViewBox({ x: -50, y: -50, width: width + 100, height: height + 100 });
+             setViewBox({ x: -50, y: -height - 50, width: width + 100, height: height + 100 });
         }
     };
 
     const handleMouseDown = (event: MouseEvent<SVGSVGElement>) => {
-        const pt = getPointFromEvent(event);
+        const pt = getModelPoint(event); // Use Model Coords
 
         // --- NESTING MODE: Drag Part Logic ---
         if (mode === AppMode.Nesting && activeNest && currentNestSheet && onSelectNestPart) {
@@ -138,7 +162,7 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
                 const pp = currentNestSheet.placedParts[i];
                 const part = parts.find(p => p.id === pp.partId);
                 if (part) {
-                    // Check hit
+                    // Check hit using Model Coords
                     if (isPointInRectangle(pt, pp.x, pp.y, part.geometry.width, part.geometry.height, pp.rotation)) {
                         onSelectNestPart(pp.id);
                         setDraggingNestPartId(pp.id);
@@ -165,7 +189,7 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
     };
 
     const handleMouseMove = (event: MouseEvent<SVGSVGElement>) => {
-        const pt = getPointFromEvent(event);
+        const pt = getModelPoint(event); // Model Coords
         setMousePos(pt);
         
         // --- NESTING MODE: Moving Part ---
@@ -178,7 +202,6 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
             let finalDy = dy;
             
             // Nesting Snapping Logic
-            // Always active
              const draggedPart = currentNestSheet.placedParts.find(p => p.id === draggingNestPartId);
              if (draggedPart) {
                  // Predict next position
@@ -192,7 +215,6 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
              }
 
             onMoveNestPart(draggingNestPartId, finalDx, finalDy);
-            
             lastDragPos.current = pt;
             
             event.stopPropagation();
@@ -201,7 +223,6 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
 
         if (isSelectingRef.current && selectionStart) {
              setSelectionCurrent(pt);
-             // Stop pan if we are selecting box
              event.stopPropagation();
         } else {
              panZoomHandlers.onMouseMove(event);
@@ -387,6 +408,9 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
         const p2 = seg.p2;
 
         // Using normalized coords: standard SVG arc
+        // Logic might depend on CW/CCW if model is Y-Up. 
+        // dxfParser creates path data. Here we have raw segments.
+        // Assuming geometry matches d string
         return `M ${p1.x} ${p1.y} A ${r} ${r} 0 0 0 ${p2.x} ${p2.y}`;
     };
 
@@ -454,13 +478,11 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
         let sheetW = 2500;
         let sheetH = 1250;
         let placedParts: PlacedPart[] = [];
-        let sheetId = "empty";
 
         if (currentNestSheet) {
             sheetW = currentNestSheet.width;
             sheetH = currentNestSheet.height;
             placedParts = currentNestSheet.placedParts;
-            sheetId = currentNestSheet.id;
         } else {
              // If no result sheet, show stock size of active stock
              const activeStock = activeNest.settings.availableSheets.find(s => s.id === activeNest.settings.activeSheetId) || activeNest.settings.availableSheets[0];
@@ -483,92 +505,105 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
                 onMouseLeave={handleMouseLeave}
                 className={`cursor-grab ${isDragging ? 'cursor-grabbing' : ''}`}
             >
-                {/* Sheet background */}
-                <rect x="0" y="0" width={sheetW} height={sheetH} fill="#2d3748" stroke="#4a5568" strokeWidth="2"/>
+                <GridDefs />
                 
-                {/* Origin Indicator (Bottom Left Visual) */}
-                <g transform={`translate(0, ${sheetH})`}>
-                     <line x1="0" y1="0" x2="100" y2="0" stroke="lime" strokeWidth="2" />
-                     <line x1="0" y1="0" x2="0" y2="-100" stroke="lime" strokeWidth="2" />
-                     <text x="10" y="-10" fill="lime" fontSize="20" fontWeight="bold">X</text>
-                     <text x="5" y="-80" fill="lime" fontSize="20" fontWeight="bold">Y</text>
-                     <circle cx="0" cy="0" r="4" fill="lime" />
-                </g>
+                {/* Visual Flip: Map Y-Up (Model) to Y-Down (SVG) */}
+                <g transform="scale(1, -1)">
+                    
+                    {/* Background Grid - Fixed Rect covering the view */}
+                    <rect x={viewBox.x - 2000} y={viewBox.y - 2000} width={viewBox.width + 4000} height={viewBox.height + 4000} fill="url(#grid)" pointerEvents="none"/>
 
-                {/* Clamps */}
-                {activeNest.settings.clampPositions.map((cx, i) => (
-                    <g key={i} transform={`translate(${cx}, ${sheetH})`}>
-                        {/* Clamp body - centered on cx, attached to bottom edge */}
-                        <rect x="-40" y="-50" width="80" height="50" fill="#a0aec0" stroke="#718096" strokeWidth="1" opacity="0.8" />
-                        <rect x="-40" y="0" width="80" height="20" fill="#718096" />
-                        <text x="0" y="-20" textAnchor="middle" fill="#2d3748" fontSize="12" fontWeight="bold">{i+1}</text>
+                    {/* Sheet body - Origin (0,0) is Bottom-Left in Model */}
+                    <rect x="0" y="0" width={sheetW} height={sheetH} fill="#2d3748" fillOpacity="0.8" stroke="#4a5568" strokeWidth="2" vectorEffect="non-scaling-stroke"/>
+                    
+                    {/* Origin Indicator (Bottom Left Visual - Y=0) */}
+                    <g transform={`translate(0, 0)`}>
+                         <line x1="0" y1="0" x2="100" y2="0" stroke="lime" strokeWidth="2" vectorEffect="non-scaling-stroke"/>
+                         <line x1="0" y1="0" x2="0" y2="100" stroke="lime" strokeWidth="2" vectorEffect="non-scaling-stroke"/>
+                         {/* Text needs to be un-flipped */}
+                         <g transform="scale(1, -1)">
+                             <text x="10" y="-10" fill="lime" fontSize="20" fontWeight="bold">X</text>
+                             <text x="5" y="-80" fill="lime" fontSize="20" fontWeight="bold">Y</text>
+                         </g>
+                         <circle cx="0" cy="0" r="4" fill="lime" vectorEffect="non-scaling-stroke"/>
                     </g>
-                ))}
 
-                {/* Placed Parts */}
-                {placedParts.map(pp => {
-                    const part = parts.find(p => p.id === pp.partId);
-                    if(!part) return null;
-                    const isSelected = selectedNestPartId === pp.id;
+                    {/* Clamps - Y=0 is bottom edge */}
+                    {activeNest.settings.clampPositions.map((cx, i) => (
+                        <g key={i} transform={`translate(${cx}, 0)`}>
+                            {/* Clamp body - centered on cx, attached to bottom edge */}
+                            <rect x="-40" y="-50" width="80" height="50" fill="#a0aec0" stroke="#718096" strokeWidth="1" opacity="0.8" vectorEffect="non-scaling-stroke" />
+                            <rect x="-40" y="0" width="80" height="20" fill="#718096" vectorEffect="non-scaling-stroke" />
+                            <g transform="scale(1, -1)">
+                                <text x="0" y="20" textAnchor="middle" fill="#2d3748" fontSize="12" fontWeight="bold">{i+1}</text>
+                            </g>
+                        </g>
+                    ))}
 
-                    return (
-                        <g 
-                            key={pp.id} 
-                            transform={`translate(${pp.x} ${pp.y}) rotate(${pp.rotation})`}
-                            className={isSelected ? "opacity-100" : "opacity-90"}
-                        >
-                            {/* Part Body */}
-                            <path 
-                                d={part.geometry.path} 
-                                fill={isSelected ? "#3182ce" : "#4a5568"} 
-                                stroke={isSelected ? "#63b3ed" : "#a0aec0"} 
-                                strokeWidth={isSelected ? 2 : 1} 
-                                vectorEffect="non-scaling-stroke"
-                            />
-                            
-                            {/* Tools on Part */}
-                            {part.punches.map(punch => {
-                                const tool = tools.find(t => t.id === punch.toolId);
-                                if (!tool) return null;
-                                return (
-                                    <g 
-                                        key={punch.id} 
-                                        transform={`translate(${punch.x}, ${punch.y}) rotate(${punch.rotation})`}
-                                    >
-                                        <ToolSvg tool={tool} />
-                                    </g>
-                                )
-                            })}
+                    {/* Placed Parts */}
+                    {placedParts.map(pp => {
+                        const part = parts.find(p => p.id === pp.partId);
+                        if(!part) return null;
+                        const isSelected = selectedNestPartId === pp.id;
 
-                            {/* Part Name Label (Centered roughly) */}
-                            <text 
-                                x={part.geometry.width / 2} 
-                                y={part.geometry.height / 2} 
-                                textAnchor="middle" 
-                                dominantBaseline="middle"
-                                className="text-xs fill-white font-bold select-none pointer-events-none"
-                                style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}
-                                transform={`rotate(${-pp.rotation}, ${part.geometry.width / 2}, ${part.geometry.height / 2})`} // Counter-rotate text for readability.
+                        return (
+                            <g 
+                                key={pp.id} 
+                                transform={`translate(${pp.x} ${pp.y}) rotate(${pp.rotation})`}
+                                className={isSelected ? "opacity-100" : "opacity-90"}
                             >
-                                {part.name}
-                            </text>
-                            
-                            {/* Selection Outline */}
-                            {isSelected && (
-                                <rect 
-                                    x={-2} y={-2} 
-                                    width={part.geometry.width + 4} 
-                                    height={part.geometry.height + 4} 
-                                    fill="none" 
-                                    stroke="yellow" 
-                                    strokeWidth="2" 
-                                    strokeDasharray="4 2"
+                                {/* Part Body */}
+                                <path 
+                                    d={part.geometry.path} 
+                                    fill={isSelected ? "#3182ce" : "#4a5568"} 
+                                    stroke={isSelected ? "#63b3ed" : "#a0aec0"} 
+                                    strokeWidth={isSelected ? 2 : 1} 
                                     vectorEffect="non-scaling-stroke"
                                 />
-                            )}
-                        </g>
-                    )
-                })}
+                                
+                                {/* Tools on Part */}
+                                {part.punches.map(punch => {
+                                    const tool = tools.find(t => t.id === punch.toolId);
+                                    if (!tool) return null;
+                                    return (
+                                        <g 
+                                            key={punch.id} 
+                                            transform={`translate(${punch.x}, ${punch.y}) rotate(${punch.rotation})`}
+                                        >
+                                            <ToolSvg tool={tool} />
+                                        </g>
+                                    )
+                                })}
+
+                                {/* Part Name Label */}
+                                <g transform={`translate(${part.geometry.width / 2}, ${part.geometry.height / 2}) rotate(${-pp.rotation}) scale(1, -1)`}>
+                                    <text 
+                                        textAnchor="middle" 
+                                        dominantBaseline="middle"
+                                        className="text-xs fill-white font-bold select-none pointer-events-none"
+                                        style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}
+                                    >
+                                        {part.name}
+                                    </text>
+                                </g>
+                                
+                                {/* Selection Outline */}
+                                {isSelected && (
+                                    <rect 
+                                        x={-2} y={-2} 
+                                        width={part.geometry.width + 4} 
+                                        height={part.geometry.height + 4} 
+                                        fill="none" 
+                                        stroke="yellow" 
+                                        strokeWidth="2" 
+                                        strokeDasharray="4 2"
+                                        vectorEffect="non-scaling-stroke"
+                                    />
+                                )}
+                            </g>
+                        )
+                    })}
+                </g>
             </svg>
         );
     }
@@ -597,51 +632,74 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
                             onMouseMove={handleMouseMove}
                             onMouseUp={handleMouseUp}
                             onMouseLeave={handleMouseLeave}
-                            onClick={(e) => { e.stopPropagation(); if(!teachMode) onSelectPunch(''); }}
+                            onClick={(e) => { 
+                                // Pass Model Point to selection handler
+                                e.stopPropagation(); 
+                                if(!teachMode && onSelectPunch) {
+                                    // Normally onSelectPunch takes ID, handled by child click.
+                                    // If clicking empty space, clear selection.
+                                    onSelectPunch(''); 
+                                }
+                            }}
                             className={isDragging ? 'cursor-grabbing' : (manualPunchMode !== ManualPunchMode.Punch && !teachMode ? 'cursor-crosshair' : 'cursor-grab')}
                         >
-                            <path d={activePart.geometry.path} fill="rgba(31, 41, 55, 0.5)" stroke="#63b3ed" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+                            <GridDefs />
                             
-                            {/* Teach Mode Segment Highlights */}
-                            {teachMode && renderTeachModeHighlights()}
+                            {/* Visual Flip: Model Y-Up -> SVG Y-Down */}
+                            <g transform="scale(1, -1)">
+                                <rect x={viewBox.x - 2000} y={viewBox.y - 2000} width={viewBox.width + 4000} height={viewBox.height + 4000} fill="url(#grid)" pointerEvents="none"/>
 
-                            {activePart.punches.map(punch => {
-                                const tool = tools.find(t => t.id === punch.toolId);
-                                if(!tool) return null;
+                                <path d={activePart.geometry.path} fill="rgba(31, 41, 55, 0.5)" stroke="#63b3ed" strokeWidth="2" vectorEffect="non-scaling-stroke" />
                                 
-                                const isSelected = teachMode ? selectedTeachPunchIds.includes(punch.id) : punch.id === selectedPunchId;
-                                const isGrouped = !!punch.lineId;
-                                
-                                return (
-                                <g 
-                                    key={punch.id} 
-                                    transform={`translate(${punch.x}, ${punch.y}) rotate(${punch.rotation})`}
-                                    onClick={(e) => { 
-                                        e.stopPropagation(); 
-                                        onSelectPunch(punch.id); 
-                                    }}
-                                    className="cursor-pointer"
-                                >
-                                    {isSelected && <rect x={-tool.width/2-2} y={-tool.height/2-2} width={tool.width+4} height={tool.height+4} fill="none" stroke={teachMode ? "#ec4899" : "cyan"} strokeWidth="2" vectorEffect="non-scaling-stroke" />}
+                                {/* Teach Mode Segment Highlights */}
+                                {teachMode && renderTeachModeHighlights()}
+
+                                {activePart.punches.map(punch => {
+                                    const tool = tools.find(t => t.id === punch.toolId);
+                                    if(!tool) return null;
                                     
-                                    {/* Small crosshair */}
-                                    <path d="M -2 0 L 2 0 M 0 -2 L 0 2" stroke={isSelected ? (teachMode ? "#ec4899" : "cyan") : "red"} strokeWidth="0.5" vectorEffect="non-scaling-stroke"/>
+                                    const isSelected = teachMode ? selectedTeachPunchIds.includes(punch.id) : punch.id === selectedPunchId;
+                                    const isGrouped = !!punch.lineId;
                                     
-                                    <g opacity={isSelected ? 1 : 0.7}>
-                                         <ToolSvg tool={tool} />
+                                    return (
+                                    <g 
+                                        key={punch.id} 
+                                        transform={`translate(${punch.x}, ${punch.y}) rotate(${punch.rotation})`}
+                                        onClick={(e) => { 
+                                            e.stopPropagation(); 
+                                            onSelectPunch(punch.id); 
+                                        }}
+                                        className="cursor-pointer"
+                                    >
+                                        {isSelected && <rect x={-tool.width/2-2} y={-tool.height/2-2} width={tool.width+4} height={tool.height+4} fill="none" stroke={teachMode ? "#ec4899" : "cyan"} strokeWidth="2" vectorEffect="non-scaling-stroke" />}
+                                        
+                                        {/* Small crosshair */}
+                                        <path d="M -2 0 L 2 0 M 0 -2 L 0 2" stroke={isSelected ? (teachMode ? "#ec4899" : "cyan") : "red"} strokeWidth="0.5" vectorEffect="non-scaling-stroke"/>
+                                        
+                                        <g opacity={isSelected ? 1 : 0.7}>
+                                             <ToolSvg tool={tool} />
+                                        </g>
+                                        {isGrouped && isSelected && !teachMode && <circle r="2" fill="yellow" cy="-5"/>}
                                     </g>
-                                    {isGrouped && isSelected && !teachMode && <circle r="2" fill="yellow" cy="-5"/>}
-                                </g>
-                                )
-                            })}
-                            {renderGhostGeometry()}
-                            {renderGhostTool()}
-                            {renderSelectionBox()}
+                                    )
+                                })}
+                                {renderGhostGeometry()}
+                                {renderGhostTool()}
+                                {renderSelectionBox()}
+                            </g>
                         </svg>
                     )}
                     {mode === AppMode.Nesting && activeNest && renderNestingSheet()}
                      {!activePart && mode === AppMode.PartEditor && <span>Загрузите DXF или выберите деталь из библиотеки</span>}
                      
+                     {/* Cursor Position Readout */}
+                     <div className="absolute bottom-4 left-4 bg-gray-800/90 p-2 rounded shadow-lg backdrop-blur-sm border border-gray-600 z-10 pointer-events-none font-mono text-xs text-green-400">
+                         <div className="flex space-x-4">
+                             <span>X: {mousePos ? mousePos.x.toFixed(2) : '0.00'}</span>
+                             <span>Y: {mousePos ? mousePos.y.toFixed(2) : '0.00'}</span>
+                         </div>
+                     </div>
+
                      {/* Zoom Controls */}
                      <div className="absolute bottom-4 right-4 flex flex-col space-y-2 bg-gray-800/80 p-2 rounded shadow-lg backdrop-blur-sm border border-gray-600 z-10">
                          <button onClick={handleZoomIn} className="p-2 hover:bg-gray-600 rounded text-white" title="Увеличить"><PlusIcon className="w-5 h-5" /></button>

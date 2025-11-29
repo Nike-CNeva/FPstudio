@@ -1,7 +1,6 @@
-
 import React, { useState, ChangeEvent, useEffect, useMemo } from 'react';
-import { AppMode, NestLayout, Part, Tool, PlacedTool, ManualPunchMode, Point, NibbleSettings, DestructSettings, PlacementReference, SnapMode, ScheduledPart, TurretLayout, AutoPunchSettings, PlacementSide, TeachCycle, ToastMessage, ParametricScript } from './types';
-import { initialTools, initialParts, initialNests, initialTurretLayouts, initialScripts } from './data/initialData';
+import { AppMode, NestLayout, Part, Tool, PlacedTool, ManualPunchMode, Point, NibbleSettings, DestructSettings, PlacementReference, SnapMode, ScheduledPart, TurretLayout, AutoPunchSettings, PlacementSide, TeachCycle, ToastMessage, ParametricScript, MachineSettings, OptimizerSettings } from './types';
+import { initialTools, initialParts, initialNests, initialTurretLayouts, initialScripts, defaultMachineSettings, defaultOptimizerSettings } from './data/initialData';
 import { generateId, getPartBaseName, generatePartNameFromProfile } from './utils/helpers';
 import { usePanAndZoom } from './hooks/usePanAndZoom';
 import { useConfirmation } from './hooks/useConfirmation';
@@ -14,8 +13,10 @@ import { ToolLibraryView } from './components/ToolLibraryView';
 import { TurretSetupView } from './components/TurretSetupView';
 import { ScriptLibraryView } from './components/ScriptLibraryView';
 import { PartLibraryView } from './components/PartLibraryView';
+import { MachineSetupView } from './components/MachineSetupView';
 import { AutoPunchSettingsModal } from './components/AutoPunchSettingsModal';
 import { GCodeModal } from './components/GCodeModal';
+import { OptimizerSettingsModal } from './components/OptimizerSettingsModal';
 import { TeachCycleSaveModal } from './components/TeachCycleSaveModal';
 import { ConfirmationModal } from './components/common/ConfirmationModal';
 import { ToastContainer } from './components/common/Toast';
@@ -53,6 +54,10 @@ const App: React.FC = () => {
     // Nesting Interaction State
     const [selectedNestPartId, setSelectedNestPartId] = useState<string | null>(null);
 
+    // Machine & Optimizer Settings
+    const [machineSettings, setMachineSettings] = useState<MachineSettings>(defaultMachineSettings);
+    const [optimizerSettings, setOptimizerSettings] = useState<OptimizerSettings>(defaultOptimizerSettings);
+
     // Manual Punching State
     const [manualPunchMode, setManualPunchMode] = useState<ManualPunchMode>(ManualPunchMode.Punch);
     const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
@@ -74,6 +79,7 @@ const App: React.FC = () => {
 
     // Modal States
     const [showGCodeModal, setShowGCodeModal] = useState(false);
+    const [showOptimizerModal, setShowOptimizerModal] = useState(false);
     const [generatedGCode, setGeneratedGCode] = useState('');
     const [showAutoPunchSettingsModal, setShowAutoPunchSettingsModal] = useState(false);
     const [showTeachSaveModal, setShowTeachSaveModal] = useState(false);
@@ -94,6 +100,29 @@ const App: React.FC = () => {
     const currentNestSheet = activeNest?.sheets[activeSheetIndex] || null;
 
     const selectedTool = tools.find(t => t.id === selectedToolId) || null;
+
+    // Handle Project Load Event
+    useEffect(() => {
+        const handleProjectLoad = (event: CustomEvent) => {
+            const layout = event.detail as NestLayout;
+            if (layout && layout.id && layout.settings) {
+                // Check if layout already exists or merge
+                setNests(prev => {
+                    const existing = prev.findIndex(n => n.id === layout.id);
+                    if (existing >= 0) {
+                        const copy = [...prev];
+                        copy[existing] = layout;
+                        return copy;
+                    }
+                    return [...prev, layout];
+                });
+                setActiveNestId(layout.id);
+                addToast("Проект раскроя загружен", "success");
+            }
+        };
+        window.addEventListener('fp-load-nest', handleProjectLoad as EventListener);
+        return () => window.removeEventListener('fp-load-nest', handleProjectLoad as EventListener);
+    }, []);
 
     const activePartProcessedGeometry = useMemo(() => {
         if (!activePart) return null;
@@ -265,9 +294,11 @@ const App: React.FC = () => {
 
     useEffect(() => {
         if (activePart) {
+            // Y-Up: 0 is bottom. Max Y is top (positive).
+            // SVG ViewBox needs to cover 0 to -Height.
             setViewBox({
                 x: -5,
-                y: -5,
+                y: -activePart.geometry.height - 5, 
                 width: activePart.geometry.width + 10,
                 height: activePart.geometry.height + 10
             });
@@ -298,7 +329,8 @@ const App: React.FC = () => {
                  if(stock) { width = stock.width; height = stock.height; }
              }
 
-             setViewBox({ x: -50, y: -50, width: width + 100, height: height + 100 });
+             // Y-Up: Content is from 0 to -height in SVG space.
+             setViewBox({ x: -50, y: -height - 50, width: width + 100, height: height + 100 });
         }
     }, [mode, activeNestId, activeSheetIndex]);
 
@@ -523,11 +555,7 @@ const App: React.FC = () => {
         if (newScheduledParts.length > 0) {
             setNests(prevNests => prevNests.map(nest => {
                 if (nest.id === activeNestId) {
-                    // Merge logic: if part already scheduled, increase quantity? 
-                    // Or just append. Let's append for now to keep it simple, 
-                    // but better to merge if ID matches.
                     const mergedSchedule = [...nest.scheduledParts];
-                    
                     newScheduledParts.forEach(np => {
                         const existing = mergedSchedule.find(ex => ex.partId === np.partId);
                         if (existing) {
@@ -536,7 +564,6 @@ const App: React.FC = () => {
                             mergedSchedule.push(np);
                         }
                     });
-                    
                     return { ...nest, scheduledParts: mergedSchedule };
                 }
                 return nest;
@@ -649,10 +676,6 @@ const App: React.FC = () => {
                      const newRotDeg = (pp.rotation + 90) % 360;
                      const newRotRad = (newRotDeg * Math.PI) / 180;
 
-                     // Calculate center relative to anchor (0,0)
-                     // Standard rotation matrix: x' = x*cos - y*sin, y' = x*sin + y*cos
-                     // Local Center is at (w/2, h/2)
-                     
                      const cxOld = (w / 2) * Math.cos(oldRotRad) - (h / 2) * Math.sin(oldRotRad);
                      const cyOld = (w / 2) * Math.sin(oldRotRad) + (h / 2) * Math.cos(oldRotRad);
 
@@ -662,10 +685,6 @@ const App: React.FC = () => {
                      return { 
                          ...pp, 
                          rotation: newRotDeg,
-                         // Shift anchor so the center remains in the same world position
-                         // WorldCenter = OldAnchor + OldCenterVector
-                         // NewAnchor = WorldCenter - NewCenterVector
-                         // NewAnchor = OldAnchor + OldCenterVector - NewCenterVector
                          x: pp.x + (cxOld - cxNew),
                          y: pp.y + (cyOld - cyNew)
                      };
@@ -685,10 +704,44 @@ const App: React.FC = () => {
         setSelectedNestPartId(id);
     };
 
+    // Triggered when clicking "Post-processor"
     const handleGenerateGCode = () => {
+        if (!currentNestSheet) {
+            addToast("Нет листа для генерации", "error");
+            return;
+        }
+        setShowOptimizerModal(true);
+    };
+
+    // Triggered after Optimizer Modal confirms
+    const handleFinalizeGCode = (finalOptimizerSettings: OptimizerSettings) => {
         if (!currentNestSheet) return;
-        const code = generateGCode(currentNestSheet, parts, tools, activeNest?.name || 'Nest');
+        setOptimizerSettings(finalOptimizerSettings); // Update state with latest
+        
+        // Pass clampPositions from the active nest settings
+        const currentClamps = activeNest?.settings.clampPositions || [420, 1010, 1550];
+        
+        // Program Number = Sheet Index + 1 (e.g., O0001 for Sheet 1)
+        const programNumber = activeSheetIndex + 1;
+
+        // Filename for NC header (O-number comment)
+        const ncFilename = activeNest?.workOrder 
+            ? `${activeNest.workOrder}_${programNumber}.nc` 
+            : `Program_${programNumber}.nc`;
+
+        const code = generateGCode(
+            currentNestSheet, 
+            parts, 
+            tools, 
+            ncFilename, // Pass specific filename, NOT nest name
+            machineSettings,
+            finalOptimizerSettings,
+            currentClamps,
+            programNumber
+        );
+        
         setGeneratedGCode(code);
+        setShowOptimizerModal(false);
         setShowGCodeModal(true);
     };
     
@@ -698,7 +751,12 @@ const App: React.FC = () => {
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        const fileName = activeNest?.name ? `${activeNest.name.replace(/\s/g, '_')}_Sheet${activeSheetIndex+1}.nc` : `gcode_${Date.now()}.nc`;
+        
+        // Filename format: [WorkOrder]_[SheetNum].nc
+        const fileName = activeNest?.workOrder 
+            ? `${activeNest.workOrder}_${activeSheetIndex + 1}.nc` 
+            : `Program_${activeSheetIndex + 1}.nc`;
+            
         link.download = fileName;
         document.body.appendChild(link);
         link.click();
@@ -742,6 +800,22 @@ const App: React.FC = () => {
         };
         setNests(nests.map(n => n.id === activeNestId ? updatedNest : n));
     }
+
+    const handleUpdateNestMetadata = (metadata: { customer?: string, workOrder?: string }) => {
+        if (!activeNest) return;
+        const updatedNest = { ...activeNest, ...metadata };
+        setNests(nests.map(n => n.id === activeNestId ? updatedNest : n));
+    };
+
+    // Calculate report full file path string for display
+    const reportFilePath = useMemo(() => {
+        const year = new Date().getFullYear();
+        const customer = activeNest?.customer || 'Unknown';
+        const order = activeNest?.workOrder || 'NoOrder';
+        const file = activeNest?.workOrder ? `${activeNest.workOrder}_${activeSheetIndex + 1}.nc` : `Program_${activeSheetIndex + 1}.nc`;
+        // Removed spaces around slashes
+        return `${year}/${customer}/${order}/${file}`;
+    }, [activeNest, activeSheetIndex]);
 
     const renderContent = () => {
         if (mode === AppMode.ToolLibrary) {
@@ -787,6 +861,14 @@ const App: React.FC = () => {
                 />
             );
         }
+        if (mode === AppMode.MachineSetup) {
+            return (
+                <MachineSetupView 
+                    settings={machineSettings}
+                    onUpdate={setMachineSettings}
+                />
+            );
+        }
         
         return (
             <>
@@ -823,6 +905,7 @@ const App: React.FC = () => {
                     setPunchOffset={setPunchOffset}
                     // Nesting Sidebar Logic
                     onUpdateNestingSettings={handleUpdateNestingSettings}
+                    onUpdateNestMetadata={handleUpdateNestMetadata}
                     nibbleSettings={nibbleSettings}
                     setNibbleSettings={setNibbleSettings}
                     destructSettings={destructSettings}
@@ -899,7 +982,7 @@ const App: React.FC = () => {
     }
 
     return (
-        <div className="flex flex-col h-screen font-sans relative">
+        <div className="flex flex-col h-full font-sans relative">
             <Header 
                 mode={mode} 
                 setMode={setMode} 
@@ -924,8 +1007,29 @@ const App: React.FC = () => {
                     onSave={handleCreateCycle}
                 />
             )}
+            
+            {/* Optimizer Modal appears BEFORE G-Code generation */}
+            {showOptimizerModal && (
+                <OptimizerSettingsModal
+                    initialSettings={optimizerSettings}
+                    onClose={() => setShowOptimizerModal(false)}
+                    onGenerate={handleFinalizeGCode}
+                />
+            )}
+
             {showGCodeModal && (
-                <GCodeModal gcode={generatedGCode} onClose={() => setShowGCodeModal(false)} onDownload={downloadGCode} />
+                <GCodeModal 
+                    gcode={generatedGCode} 
+                    onClose={() => setShowGCodeModal(false)} 
+                    onDownload={downloadGCode}
+                    // Report Data
+                    sheet={currentNestSheet || undefined}
+                    parts={parts}
+                    tools={tools}
+                    clampPositions={activeNest?.settings.clampPositions}
+                    scheduledParts={activeNest?.scheduledParts}
+                    nestName={reportFilePath} // Pass full formatted path here
+                />
             )}
             
             <ToastContainer toasts={toasts} removeToast={removeToast} />
