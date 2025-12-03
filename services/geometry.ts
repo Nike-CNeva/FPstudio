@@ -86,9 +86,106 @@ const rayIntersectsSegment = (p: Point, a: Point, b: Point): boolean => {
     return false;
 };
 
+// --- PRECISE INTERSECTION HELPERS ---
+
+/**
+ * Checks if a line segment (P1-P2) intersects with a Circle (Center C, Radius R).
+ * Returns true if segment enters the circle or touches it.
+ */
+const segmentIntersectsCircle = (p1: Point, p2: Point, center: Point, r: number): boolean => {
+    // 1. Check if either endpoint is inside
+    const d1 = (p1.x - center.x)**2 + (p1.y - center.y)**2;
+    const d2 = (p2.x - center.x)**2 + (p2.y - center.y)**2;
+    const r2 = r * r;
+    if (d1 < r2 || d2 < r2) return true;
+
+    // 2. Project Center onto Line Segment
+    const lx = p2.x - p1.x;
+    const ly = p2.y - p1.y;
+    const lenSq = lx * lx + ly * ly;
+    
+    if (lenSq === 0) return false; // p1 == p2, already checked via d1
+
+    // dot product of (Center - P1) and (P2 - P1)
+    const dot = ((center.x - p1.x) * lx + (center.y - p1.y) * ly) / lenSq;
+
+    // Closest point on infinite line
+    const closestX = p1.x + dot * lx;
+    const closestY = p1.y + dot * ly;
+
+    // Check if closest point is on the segment (dot must be between 0 and 1)
+    if (dot < 0 || dot > 1) return false;
+
+    // Distance from closest point to center
+    const distSq = (closestX - center.x)**2 + (closestY - center.y)**2;
+    
+    // Allow small epsilon for grazing (0.01)
+    return distSq < (r2 - 0.0001); 
+};
+
+/**
+ * Checks if a line segment intersects with an Arc.
+ * Simplified: Checks if segment intersects the circle defined by the arc,
+ * AND if intersection points are within angles.
+ * Note: For simple occlusion checks, using full circle might be too aggressive, 
+ * but safer for ensuring path is clear.
+ * Optimized here to check angles.
+ */
+const segmentIntersectsArc = (p1: Point, p2: Point, center: Point, r: number, startAngle: number, endAngle: number): boolean => {
+    // First, quick circle check
+    if (!segmentIntersectsCircle(p1, p2, center, r)) return false;
+
+    // If it intersects circle, calculate intersection points and check angles
+    // Line: P = P1 + t(P2-P1). Circle: |P-C|^2 = R^2
+    // Substitute: |(P1-C) + t(P2-P1)|^2 = R^2
+    // let D = P1 - C,  V = P2 - P1.  |D + tV|^2 = R^2
+    // (D+tV).(D+tV) = D.D + 2t(D.V) + t^2(V.V) = R^2
+    // A*t^2 + B*t + C = 0
+    
+    const dx = p1.x - center.x;
+    const dy = p1.y - center.y;
+    const vx = p2.x - p1.x;
+    const vy = p2.y - p1.y;
+    
+    const A = vx*vx + vy*vy;
+    const B = 2 * (dx*vx + dy*vy);
+    const C = (dx*dx + dy*dy) - (r*r);
+    
+    const det = B*B - 4*A*C;
+    
+    if (det < 0) return false; // Should not happen given circle check passed
+    
+    const sqrtDet = Math.sqrt(det);
+    const t1 = (-B - sqrtDet) / (2*A);
+    const t2 = (-B + sqrtDet) / (2*A);
+    
+    const checkT = (t: number) => {
+        if (t >= 0 && t <= 1) {
+            const ix = p1.x + t * vx;
+            const iy = p1.y + t * vy;
+            const angle = Math.atan2(iy - center.y, ix - center.x) * (180 / Math.PI);
+            let normAngle = angle < 0 ? angle + 360 : angle;
+            
+            let s = startAngle;
+            let e = endAngle;
+            if (e < s) e += 360;
+            if (normAngle < s) normAngle += 360;
+            
+            if (normAngle >= s && normAngle <= e) return true;
+        }
+        return false;
+    }
+
+    if (checkT(t1)) return true;
+    if (checkT(t2)) return true;
+    
+    return false;
+};
+
 /**
  * Checks intersections between a specific line segment (p1-p2) and the part entities.
  * Used for Line-of-Sight checks.
+ * REFACTORED: Uses precise mathematical checks instead of segmentation.
  */
 const segmentIntersectsGeometry = (p1: Point, p2: Point, entities: DxfEntity[]): boolean => {
     const minX = Math.min(p1.x, p2.x) - 0.1;
@@ -96,10 +193,8 @@ const segmentIntersectsGeometry = (p1: Point, p2: Point, entities: DxfEntity[]):
     const minY = Math.min(p1.y, p2.y) - 0.1;
     const maxY = Math.max(p1.y, p2.y) + 0.1;
 
-    // Simplified intersection check: treat everything as line segments for robustness
-    // This is an approximation for Arcs but sufficient for "blocking" checks
+    // Helper for line-line intersection
     const checkLine = (a: Point, b: Point) => {
-        // Standard line-line intersection
         const det = (p2.x - p1.x) * (b.y - a.y) - (p2.y - p1.y) * (b.x - a.x);
         if (det === 0) return false;
         
@@ -112,7 +207,6 @@ const segmentIntersectsGeometry = (p1: Point, p2: Point, entities: DxfEntity[]):
         const r = numerator1 / denominator;
         const s = numerator2 / denominator;
 
-        // Check if intersection is strictly within segments (ignore endpoints to allow starting on a line)
         return (r > 0.01 && r < 0.99) && (s > 0.01 && s < 0.99);
     };
 
@@ -127,30 +221,19 @@ const segmentIntersectsGeometry = (p1: Point, p2: Point, entities: DxfEntity[]):
             if (entity.closed && v.length > 1) {
                 if (checkLine(v[v.length-1], v[0])) return true;
             }
-        } else if (entity.type === 'ARC' || entity.type === 'CIRCLE') {
-            // Bounding box pre-check for curve
-            const cx = entity.center.x;
-            const cy = entity.center.y;
-            const r = entity.radius;
-            if (cx + r < minX || cx - r > maxX || cy + r < minY || cy - r > maxY) continue;
+        } else if (entity.type === 'ARC') {
+            // Bounding box pre-check
+            if (entity.center.x + entity.radius < minX || entity.center.x - entity.radius > maxX || 
+                entity.center.y + entity.radius < minY || entity.center.y - entity.radius > maxY) continue;
 
-            // Crude approximation: 8 segments
-            const steps = 8;
-            let startAngle = 0;
-            let endAngle = Math.PI * 2;
-            if (entity.type === 'ARC') {
-                startAngle = entity.startAngle * (Math.PI / 180);
-                endAngle = entity.endAngle * (Math.PI / 180);
-                if (endAngle < startAngle) endAngle += Math.PI * 2;
-            }
-            
-            let prevP = { x: cx + r * Math.cos(startAngle), y: cy + r * Math.sin(startAngle) };
-            for(let i=1; i<=steps; i++) {
-                const ang = startAngle + (endAngle - startAngle) * (i/steps);
-                const currP = { x: cx + r * Math.cos(ang), y: cy + r * Math.sin(ang) };
-                if (checkLine(prevP, currP)) return true;
-                prevP = currP;
-            }
+            if (segmentIntersectsArc(p1, p2, entity.center, entity.radius, entity.startAngle, entity.endAngle)) return true;
+
+        } else if (entity.type === 'CIRCLE') {
+             // Bounding box pre-check
+            if (entity.center.x + entity.radius < minX || entity.center.x - entity.radius > maxX || 
+                entity.center.y + entity.radius < minY || entity.center.y - entity.radius > maxY) continue;
+
+            if (segmentIntersectsCircle(p1, p2, entity.center, entity.radius)) return true;
         }
     }
     return false;
@@ -285,7 +368,7 @@ export interface SnapResult {
     wasNormalized: boolean;
 }
 
-const degreesToRadians = (degrees: number) => degrees * (Math.PI / 180);
+const distanceSq = (p1: Point, p2: Point) => (p1.x - p2.x)**2 + (p1.y - p2.y)**2;
 
 const normalize = (p: Point, bbox: PartGeometry['bbox']) => ({
     x: p.x - bbox.minX,
@@ -311,8 +394,6 @@ const polygonCenter = (vertices: Point[]): Point => {
     }
     return { x: x / vertices.length, y: y / vertices.length };
 }
-
-const distanceSq = (p1: Point, p2: Point) => (p1.x - p2.x)**2 + (p1.y - p2.y)**2;
 
 export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null => {
     const { entities, bbox } = part.geometry;
@@ -344,8 +425,9 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
                 break;
             }
             case 'ARC': {
-                const startRad = degreesToRadians(entity.startAngle);
-                const endRad = degreesToRadians(entity.endAngle);
+                const d2r = Math.PI / 180;
+                const startRad = entity.startAngle * d2r;
+                const endRad = entity.endAngle * d2r;
                 const p1_raw = { x: entity.center.x + entity.radius * Math.cos(startRad), y: entity.center.y + entity.radius * Math.sin(startRad) };
                 const p2_raw = { x: entity.center.x + entity.radius * Math.cos(endRad), y: entity.center.y + entity.radius * Math.sin(endRad) };
                 const p1 = normalize(p1_raw, bbox);
@@ -397,42 +479,6 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
             allShapeCenters.set(`${center.x.toFixed(3)},${center.y.toFixed(3)}`, center);
         }
     });
-
-    const lines = segments.filter(s => s.type === 'line');
-    const usedLines = new Set<Segment>();
-    
-    for(let i=0; i<lines.length; i++) {
-        if(usedLines.has(lines[i])) continue;
-        const l1 = lines[i];
-        const len1Sq = distanceSq(l1.p1, l1.p2);
-        if (len1Sq < 0.1) continue; 
-        const dx1 = l1.p2.x - l1.p1.x; 
-        const dy1 = l1.p2.y - l1.p1.y;
-        
-        for(let j=i+1; j<lines.length; j++) {
-            if(usedLines.has(lines[j])) continue;
-            const l2 = lines[j];
-            const len2Sq = distanceSq(l2.p1, l2.p2);
-            if (Math.abs(len1Sq - len2Sq) > 1.0) continue; 
-            const dx2 = l2.p2.x - l2.p1.x; 
-            const dy2 = l2.p2.y - l2.p1.y;
-            if (Math.abs(dx1*dy2 - dx2*dy1) > 1.0) continue; 
-            const mid1 = { x: (l1.p1.x + l1.p2.x)/2, y: (l1.p1.y + l1.p2.y)/2 };
-            const mid2 = { x: (l2.p1.x + l2.p2.x)/2, y: (l2.p1.y + l2.p2.y)/2 };
-            const connX = mid2.x - mid1.x;
-            const connY = mid2.y - mid1.y;
-            const dot = connX * dx1 + connY * dy1;
-            const projection = Math.abs(dot) / len1Sq;
-            if (projection > 0.2) continue; 
-            
-            const center = { x: (mid1.x + mid2.x)/2, y: (mid1.y + mid2.y)/2 };
-            const key = `${center.x.toFixed(3)},${center.y.toFixed(3)}`;
-            if (!allShapeCenters.has(key)) allShapeCenters.set(key, center);
-            usedLines.add(lines[i]);
-            usedLines.add(lines[j]);
-            break; 
-        }
-    }
 
     return { vertices, segments, bbox, holeCenters: Array.from(allShapeCenters.values()) };
 };
@@ -566,38 +612,31 @@ export const findSnapPoint = (
     return null;
 };
 
-/**
- * Analyzes geometry to detect Profile (L-shape, U-shape).
- * Improved to robustly distinguishing between internal holes and actual edge notches/reliefs.
- * Also filters out corner cutouts to find the main bend line(s).
- * Now also detects ORIENTATION (Vertical vs Horizontal bends).
- */
+// ... detectPartProfile logic (unchanged) ...
 export const detectPartProfile = (geometry: PartGeometry): PartProfile => {
     const { bbox, entities, height } = geometry;
     const width = bbox.maxX - bbox.minX;
 
     if (entities.length === 0) return { type: 'flat', orientation: 'vertical', dims: { a: width, b: 0, c: 0 } };
 
-    const toSvgY = (rawY: number) => rawY - bbox.minY; // Y-Up: Simple shift
+    const toSvgY = (rawY: number) => rawY - bbox.minY;
     const toSvgX = (rawX: number) => rawX - bbox.minX;
 
-    // Check zones
     const MIN_DEPTH = 0.5;
     const MAX_DEPTH = 50.0;
 
-    const topZone = { min: height - MAX_DEPTH, max: height - MIN_DEPTH }; // Top is High Y in Y-Up
-    const bottomZone = { min: MIN_DEPTH, max: MAX_DEPTH }; // Bottom is Low Y
+    const topZone = { min: height - MAX_DEPTH, max: height - MIN_DEPTH };
+    const bottomZone = { min: MIN_DEPTH, max: MAX_DEPTH };
     const leftZone = { min: MIN_DEPTH, max: MAX_DEPTH };
     const rightZone = { min: width - MAX_DEPTH, max: width - MIN_DEPTH };
 
     const verticalBendCandidates: number[] = [];
     const horizontalBendCandidates: number[] = [];
 
-    // Raw Entity Helper for intersection checks (Line of Sight)
     const isVisibleFromEdge = (pRaw: Point, edge: 'top'|'bottom'|'left'|'right'): boolean => {
         let target = { ...pRaw };
-        if (edge === 'top') target.y = bbox.maxY + 1; // Cast Up
-        else if (edge === 'bottom') target.y = bbox.minY - 1; // Cast Down
+        if (edge === 'top') target.y = bbox.maxY + 1;
+        else if (edge === 'bottom') target.y = bbox.minY - 1;
         else if (edge === 'left') target.x = bbox.minX - 1;
         else if (edge === 'right') target.x = bbox.maxX + 1;
 
@@ -608,7 +647,6 @@ export const detectPartProfile = (geometry: PartGeometry): PartProfile => {
         const svgX = toSvgX(rawP.x);
         const svgY = toSvgY(rawP.y);
 
-        // Check Vertical Bends (Top/Bottom edges imply fold on X-axis)
         const inTop = svgY > topZone.min && svgY < topZone.max;
         const inBottom = svgY > bottomZone.min && svgY < bottomZone.max;
         
@@ -619,7 +657,6 @@ export const detectPartProfile = (geometry: PartGeometry): PartProfile => {
             if (isVisibleFromEdge(rawP, 'bottom')) verticalBendCandidates.push(svgX);
         }
 
-        // Check Horizontal Bends (Left/Right edges imply fold on Y-axis)
         const inLeft = svgX > leftZone.min && svgX < leftZone.max;
         const inRight = svgX > rightZone.min && svgX < rightZone.max;
         
@@ -636,12 +673,9 @@ export const detectPartProfile = (geometry: PartGeometry): PartProfile => {
             checkPoint(e, e.center);
         } else if (e.type === 'LWPOLYLINE') {
             e.vertices.forEach(v => checkPoint(e, v));
-        } else if (e.type === 'LINE') {
-            // Usually redundant if polylines are used
         }
     });
 
-    // Clustering Helper
     const clusterPoints = (coords: number[], rangeMax: number): number[] => {
         if (coords.length === 0) return [];
         coords.sort((a, b) => a - b);
@@ -663,12 +697,10 @@ export const detectPartProfile = (geometry: PartGeometry): PartProfile => {
             clusters.push(avg);
         }
 
-        // FILTER: Remove "Corner Reliefs"
         const margin = Math.min(rangeMax * 0.1, 50.0);
         return clusters.filter(val => val > margin && val < (rangeMax - margin));
     };
 
-    // 1. Detect Vertical Bend Lines (Folds along X axis => Left/Right Flanges)
     const verticalBendLines = clusterPoints(verticalBendCandidates, width);
 
     if (verticalBendLines.length > 0) {
@@ -690,7 +722,6 @@ export const detectPartProfile = (geometry: PartGeometry): PartProfile => {
         }
     }
 
-    // 2. Detect Horizontal Bend Lines (Folds along Y axis => Top/Bottom Flanges)
     const horizontalBendLines = clusterPoints(horizontalBendCandidates, height);
 
     if (horizontalBendLines.length > 0) {

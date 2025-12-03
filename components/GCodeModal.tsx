@@ -14,7 +14,8 @@ export const GCodeModal: React.FC<{
     clampPositions?: number[];
     scheduledParts?: ScheduledPart[];
     nestName?: string;
-}> = ({ gcode, onClose, onDownload, sheet, parts, tools, clampPositions, scheduledParts, nestName }) => {
+    allSheets?: NestResultSheet[];
+}> = ({ gcode, onClose, onDownload, sheet, parts, tools, clampPositions, scheduledParts, nestName, allSheets }) => {
 
     const handleDownloadReport = () => {
         if (sheet && parts && tools) {
@@ -29,7 +30,8 @@ export const GCodeModal: React.FC<{
                 tools,
                 displayName,
                 clampPositions || [],
-                scheduledParts || []
+                scheduledParts || [],
+                allSheets || []
             );
         }
     };

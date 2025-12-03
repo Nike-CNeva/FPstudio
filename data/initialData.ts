@@ -428,11 +428,10 @@ export const defaultMachineSettings: MachineSettings = {
 };
 
 export const defaultOptimizerSettings: OptimizerSettings = {
-    toolSequence: 'station-order',
+    toolSequence: 'global-station',
     pathOptimization: 'shortest-path',
     startCorner: 'bottom-right',
-    enableCommonLineCuts: true,
-    prioritizeContourTools: true,
     sheetUnloadMode: 'manual',
+    anglePriority: '0-90',
     useG76LinearPatterns: false
 };

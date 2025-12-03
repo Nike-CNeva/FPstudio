@@ -1,10 +1,10 @@
 
 import React, { useState, useEffect } from 'react';
 import { Tool, TurretLayout, StationConfig } from '../types';
-import { ToolSvg, ToolPreview } from './common/ToolDisplay';
-import { SaveIcon, TrashIcon, SettingsIcon, PlusIcon } from './Icons';
+import { ToolPreview } from './common/ToolDisplay';
+import { SaveIcon, TrashIcon, SettingsIcon } from './Icons';
 import { generateId } from '../utils/helpers';
-import { ModalInputField } from './common/InputField';
+import { TurretVisualizer, MtVisualizer } from './common/TurretVisualizer';
 
 interface TurretSetupViewProps {
     tools: Tool[];
@@ -127,153 +127,47 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
         setLayouts(prev => prev.map(l => l.id === activeLayoutId ? { ...l, toolsSnapshot: updatedTools } : l));
     };
 
-    // 24 slots for MT visualization (Synced with TurretViewModal logic)
-    const mtSlots = Array.from({ length: 24 }, (_, i) => {
-        const id = i + 1;
-        const isInner = id > 12;
-        const indexInRing = isInner ? id - 13 : id - 1;
-        
-        // Geometry matching TurretViewModal but scaled down for setup view
-        // Setup view box is -150 to 150. Modal is -250 to 250.
-        // Scale ratio ~ 0.6
-        const radius = isInner ? 84 : 120; // 140*0.6, 200*0.6
-        
-        let angle = - (indexInRing * 30); 
-        if (isInner) angle -= 15;
-
-        return { id, angle, radius };
-    });
-
-    const renderMainTurret = () => (
-        <svg width="100%" height="100%" viewBox="-350 -350 700 700">
-            <defs>
-                <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-                    <feDropShadow dx="2" dy="2" stdDeviation="3" floodColor="#000" floodOpacity="0.3" />
-                </filter>
-            </defs>
-            <circle r="320" fill="#2d3748" stroke="#4a5568" strokeWidth="2" />
-            <circle r="300" fill="#cbd5e0" stroke="#718096" strokeWidth="5" filter="url(#shadow)" />
-            <circle r="200" fill="#e2e8f0" stroke="#a0aec0" strokeWidth="2" />
-            <circle r="100" fill="#edf2f7" stroke="#cbd5e0" strokeWidth="1" />
-            <text x="0" y="0" textAnchor="middle" dy="5" className="fill-gray-600 text-lg font-bold">Main Turret</text>
-
-            {currentStations.map((s, i) => {
-                const step = 360 / 20;
-                const angleDeg = 90 - (i * step);
-                const rad = (angleDeg * Math.PI) / 180;
-                const x = Math.cos(rad) * 250;
-                const y = Math.sin(rad) * 250;
-
-                const assignedTools = toolsOnTurret.filter(t => t.stationNumber === s.id);
-                const hasTools = assignedTools.length > 0;
-                const isMT = s.type === 'MT';
-                const isSelected = selectedStationId === s.id;
-
-                return (
-                    <g key={s.id} transform={`translate(${x}, ${y})`} onClick={() => handleStationClick(s.id)} className="cursor-pointer hover:opacity-90 transition-opacity">
-                        <circle r="28" fill={isSelected ? "#f6e05e" : "#fff"} stroke={isSelected ? "#d69e2e" : "#a0aec0"} strokeWidth={3} />
-                        
-                        <g transform="scale(0.9)">
-                            {hasTools && !isMT && <ToolSvg tool={assignedTools[0]} />}
-                        </g>
-
-                        {hasTools && !isMT && (
-                            <text y="-22" textAnchor="middle" className="text-[8px] fill-blue-900 font-bold select-none pointer-events-none" style={{ textShadow: '0px 0px 2px white' }}>
-                                {assignedTools[0].name}
-                            </text>
-                        )}
-
-                        <g transform="translate(0, -38)">
-                            <rect x="-12" y="-10" width="24" height="20" rx="4" fill="#fff" stroke="#718096" strokeWidth="1" />
-                            <text y="4" textAnchor="middle" className="text-xs fill-gray-900 font-bold select-none">{s.id}</text>
-                        </g>
-
-                        <text y="40" textAnchor="middle" className="text-[10px] fill-gray-700 font-bold select-none bg-white">
-                            {s.type} {s.isAutoIndex ? '(AI)' : ''}
-                        </text>
-                        
-                        {isMT && (
-                            <g>
-                                <circle r="15" fill="#805ad5" opacity="0.2" />
-                                <text y="5" textAnchor="middle" className="text-[10px] fill-purple-800 font-bold">MT</text>
-                                {hasTools && <circle r="4" cx="15" cy="-15" fill="#48bb78" />}
-                            </g>
-                        )}
-                    </g>
-                );
-            })}
-        </svg>
-    );
-
-    const renderMtView = () => (
-        <div className="flex flex-col h-full">
-            <div className="flex-none p-2">
-                <button onClick={() => setIsMtView(false)} className="text-sm bg-gray-600 hover:bg-gray-500 text-white px-3 py-1 rounded">
-                    &larr; Назад
-                </button>
-            </div>
-            <div className="flex-1 relative">
-                <svg width="100%" height="100%" viewBox="-150 -150 300 300">
-                     <circle r="145" fill="#f3e8ff" stroke="#805ad5" strokeWidth="4" />
-                     <text x="0" y="-5" textAnchor="middle" className="fill-purple-900 text-lg font-bold">Multi-Tool</text>
-                     
-                     {mtSlots.map(slot => {
-                         const rad = (slot.angle * Math.PI) / 180;
-                         const x = Math.cos(rad) * slot.radius;
-                         const y = Math.sin(rad) * slot.radius;
-                         const assignedTool = toolsOnTurret.find(t => t.stationNumber === selectedStationId && t.mtIndex === slot.id);
-                         const isSelected = selectedMtSlotId === slot.id;
-
-                         return (
-                            <g key={slot.id} transform={`translate(${x}, ${y})`} onClick={() => setSelectedMtSlotId(slot.id)} className="cursor-pointer">
-                                <circle r="14" fill={assignedTool ? "#4299e1" : "#fff"} stroke={isSelected ? "#ecc94b" : "#6b46c1"} strokeWidth={isSelected ? 3 : 1} />
-                                <text y="4" textAnchor="middle" className="text-[8px] fill-gray-800 font-bold select-none">{slot.id}</text>
-                                {assignedTool && <title>{assignedTool.name}</title>}
-                            </g>
-                         )
-                     })}
-                </svg>
-            </div>
-            <div className="flex-none p-4 border-t border-gray-300 bg-gray-100 h-1/3 overflow-y-auto">
-                <h4 className="font-bold text-purple-800 mb-2">Содержимое MT (24 слота)</h4>
-                <div className="grid grid-cols-6 gap-2">
-                    {mtSlots.map(slot => {
-                         const assignedTool = toolsOnTurret.find(t => t.stationNumber === selectedStationId && t.mtIndex === slot.id);
-                         const isSelected = selectedMtSlotId === slot.id;
-                         return (
-                             <div 
-                                key={slot.id} 
-                                onClick={() => setSelectedMtSlotId(slot.id)}
-                                className={`border rounded p-1 text-center text-xs cursor-pointer transition-all ${isSelected ? 'ring-2 ring-yellow-400 bg-yellow-50 border-yellow-500' : (assignedTool ? 'bg-blue-100 border-blue-300' : 'bg-white border-gray-300')}`}
-                             >
-                                 <div className="font-bold text-gray-500 mb-1">{slot.id}</div>
-                                 {assignedTool ? (
-                                     <div>
-                                         <div className="truncate" title={assignedTool.name}>{assignedTool.name}</div>
-                                         {isSelected && (
-                                            <button onClick={(e) => { e.stopPropagation(); handleUnmountTool(assignedTool.id); }} className="text-red-500 hover:underline text-[9px] mt-1 block w-full">Снять</button>
-                                         )}
-                                     </div>
-                                 ) : <span className="text-gray-300">-</span>}
-                             </div>
-                         )
-                    })}
-                </div>
-            </div>
-        </div>
-    );
+    // 24 slots for MT visualization
+    const mtSlots = Array.from({ length: 24 }, (_, i) => i + 1);
 
     const selectedStation = currentStations.find(s => s.id === selectedStationId);
     
-    const mountedToolInMain = selectedStation && !isMtView ? toolsOnTurret.find(t => t.stationNumber === selectedStation.id && !t.mtIndex) : null;
-    const mountedToolInMtSlot = isMtView && selectedMtSlotId ? toolsOnTurret.find(t => t.stationNumber === selectedStationId && t.mtIndex === selectedMtSlotId) : null;
-    
-    const activeTool = isMtView ? mountedToolInMtSlot : mountedToolInMain;
+    const activeTool = isMtView 
+        ? toolsOnTurret.find(t => t.stationNumber === selectedStationId && t.mtIndex === selectedMtSlotId)
+        : (selectedStation ? toolsOnTurret.find(t => t.stationNumber === selectedStation.id && !t.mtIndex) : null);
+
+    // Helpers for Visualizers
+    const mtTools = isMtView ? toolsOnTurret.filter(t => t.stationNumber === selectedStationId) : [];
 
     return (
         <div className="flex h-full bg-gray-100 text-gray-900 font-sans">
-            <div className="flex-1 relative bg-gray-300 shadow-inner overflow-hidden">
-                 {isMtView ? renderMtView() : renderMainTurret()}
+            <div className="flex-1 relative bg-gray-300 shadow-inner overflow-hidden flex items-center justify-center">
+                 {isMtView ? (
+                     <div className="w-full h-full flex flex-col relative">
+                        <div className="absolute top-4 left-4 z-10">
+                            <button onClick={() => setIsMtView(false)} className="bg-gray-600 text-white px-3 py-1 rounded shadow text-sm">
+                                &larr; Назад
+                            </button>
+                        </div>
+                        <div className="flex-1 p-4">
+                            <MtVisualizer 
+                                tools={mtTools}
+                                selectedSlotId={selectedMtSlotId}
+                                onSlotClick={setSelectedMtSlotId}
+                            />
+                        </div>
+                     </div>
+                 ) : (
+                     <div className="w-full h-full p-4">
+                        <TurretVisualizer 
+                            stations={currentStations}
+                            tools={toolsOnTurret}
+                            selectedStationId={selectedStationId}
+                            onStationClick={handleStationClick}
+                            mode="setup"
+                        />
+                     </div>
+                 )}
             </div>
 
             <div className="w-96 bg-gray-800 text-gray-100 flex flex-col border-l border-gray-700 shadow-xl z-10">

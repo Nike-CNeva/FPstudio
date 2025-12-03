@@ -1,4 +1,3 @@
-
 // FIX: Moved Point and DXF entity type definitions here to resolve circular dependencies.
 export interface Point {
   x: number;
@@ -386,17 +385,30 @@ export interface MachineSettings {
 }
 
 export interface OptimizerSettings {
-    toolSequence: 'station-order' | 'tool-size-desc' | 'tool-size-asc';
-    pathOptimization: 'shortest-path' | 'x-band' | 'y-band';
+    toolSequence: 'global-station' | 'part-by-part';
+    pathOptimization: 'shortest-path' | 'x-axis' | 'y-axis'; // Updated
     startCorner: 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right';
-    
-    // Optimizations
-    enableCommonLineCuts: boolean;
-    prioritizeContourTools: boolean;
     sheetUnloadMode: 'manual' | 'automatic';
+    
+    // Updated Logic
+    anglePriority: '0-90' | '90-0'; // Logic for angle sorting in Scan modes
     
     // G-Code Options
     useG76LinearPatterns: boolean; // Use G76 for lines
+}
+
+export interface PunchOp {
+    type?: 'single' | 'move'; // 'move' for explicit rapid, 'single' for hit
+    toolT?: number;
+    toolId: string;
+    x: number;
+    y: number;
+    rotation: number; 
+    isToolChange?: boolean;
+    description?: string; // Debug info
+    lineId?: string; // Grouping ID for nibbling lines
+    sourcePunchId?: string; // ID of the original punch object (from library part)
+    compositeId?: string; // UNIQUE ID for this specific placed punch: `${placedPartId}_${punchId}`
 }
 
 export interface LinearPunchSettings {

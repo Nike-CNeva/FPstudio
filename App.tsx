@@ -1,5 +1,6 @@
-import React, { useState, ChangeEvent, useEffect, useMemo } from 'react';
-import { AppMode, NestLayout, Part, Tool, PlacedTool, ManualPunchMode, Point, NibbleSettings, DestructSettings, PlacementReference, SnapMode, ScheduledPart, TurretLayout, AutoPunchSettings, PlacementSide, TeachCycle, ToastMessage, ParametricScript, MachineSettings, OptimizerSettings } from './types';
+
+import React, { useState, ChangeEvent, useEffect, useMemo, useRef } from 'react';
+import { AppMode, NestLayout, Part, Tool, PlacedTool, ManualPunchMode, Point, NibbleSettings, DestructSettings, PlacementReference, SnapMode, ScheduledPart, TurretLayout, AutoPunchSettings, PlacementSide, TeachCycle, ToastMessage, ParametricScript, MachineSettings, OptimizerSettings, PunchOp } from './types';
 import { initialTools, initialParts, initialNests, initialTurretLayouts, initialScripts, defaultMachineSettings, defaultOptimizerSettings } from './data/initialData';
 import { generateId, getPartBaseName, generatePartNameFromProfile } from './utils/helpers';
 import { usePanAndZoom } from './hooks/usePanAndZoom';
@@ -24,8 +25,8 @@ import { ToastContainer } from './components/common/Toast';
 import { parseDxf, dxfEntitiesToSvg } from './services/dxfParser';
 import { parseCp } from './services/cpParser';
 import { generateContourPunches, generateNibblePunches, generateDestructPunches } from './services/punching';
-import { performNesting } from './services/nesting';
-import { generateGCode } from './services/gcode';
+import { nestingGenerator } from './services/nesting';
+import { generateGCode, calculateOptimizedPath } from './services/gcode';
 import { getGeometryFromEntities, findSnapPoint, findClosestSegment, detectPartProfile } from './services/geometry';
 import { calculateEdgePlacement } from './services/placement';
 import { generateParametricScript } from './services/scriptGenerator';
@@ -34,31 +35,27 @@ import { createTeachCycleFromSelection } from './services/teachLogic';
 const App: React.FC = () => {
     const [mode, setMode] = useState<AppMode>(AppMode.PartEditor);
     const [tools, setTools] = useState<Tool[]>(initialTools);
-    
-    // "parts" now acts as the Library of Concrete Parts ready for Nesting
     const [parts, setParts] = useState<Part[]>(initialParts);
-    
-    // "scripts" is the library of templates
     const [scripts, setScripts] = useState<ParametricScript[]>(initialScripts);
-    
-    // "activePart" is the current WIP part on the editor workbench
     const [activePart, setActivePart] = useState<Part | null>(null);
-    
     const [nests, setNests] = useState<NestLayout[]>(initialNests);
     const [turretLayouts, setTurretLayouts] = useState<TurretLayout[]>(initialTurretLayouts);
     
     const [activeNestId, setActiveNestId] = useState<string | null>(initialNests[0]?.id || null);
     const [activeSheetIndex, setActiveSheetIndex] = useState<number>(0);
     const [selectedPunchId, setSelectedPunchId] = useState<string | null>(null);
-
-    // Nesting Interaction State
     const [selectedNestPartId, setSelectedNestPartId] = useState<string | null>(null);
 
-    // Machine & Optimizer Settings
     const [machineSettings, setMachineSettings] = useState<MachineSettings>(defaultMachineSettings);
     const [optimizerSettings, setOptimizerSettings] = useState<OptimizerSettings>(defaultOptimizerSettings);
 
-    // Manual Punching State
+    // --- Optimization & Simulation State ---
+    const [optimizedOperations, setOptimizedOperations] = useState<PunchOp[] | null>(null);
+    const [simulationStep, setSimulationStep] = useState<number>(0);
+    const [isSimulating, setIsSimulating] = useState<boolean>(false);
+    const [simulationSpeed, setSimulationSpeed] = useState<number>(50); // ms per step
+    const simulationInterval = useRef<number | null>(null);
+
     const [manualPunchMode, setManualPunchMode] = useState<ManualPunchMode>(ManualPunchMode.Punch);
     const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
     const [punchCreationStep, setPunchCreationStep] = useState(0);
@@ -71,20 +68,21 @@ const App: React.FC = () => {
     const [nibbleSettings, setNibbleSettings] = useState<NibbleSettings>({ extensionStart: 0, extensionEnd: 0, minOverlap: 1, hitPointMode: 'offset', toolPosition: 'long' });
     const [destructSettings, setDestructSettings] = useState<DestructSettings>({ overlap: 0.7, scallop: 0.25, notchExpansion: 0.25 });
 
-    // Teach Cycles State
     const [teachCycles, setTeachCycles] = useState<TeachCycle[]>([]);
     const [teachMode, setTeachMode] = useState(false);
     const [selectedSegmentIds, setSelectedSegmentIds] = useState<number[]>([]);
     const [selectedTeachPunchIds, setSelectedTeachPunchIds] = useState<string[]>([]);
 
-    // Modal States
     const [showGCodeModal, setShowGCodeModal] = useState(false);
     const [showOptimizerModal, setShowOptimizerModal] = useState(false);
+    const [isGeneratingGCode, setIsGeneratingGCode] = useState(false); // Distinction: Are we optimizing path OR generating code?
     const [generatedGCode, setGeneratedGCode] = useState('');
     const [showAutoPunchSettingsModal, setShowAutoPunchSettingsModal] = useState(false);
     const [showTeachSaveModal, setShowTeachSaveModal] = useState(false);
     
-    // Toast
+    // Nesting Process State
+    const [isNestingProcessing, setIsNestingProcessing] = useState(false);
+    
     const [toasts, setToasts] = useState<ToastMessage[]>([]);
     
     const addToast = (message: string, type: ToastMessage['type']) => {
@@ -98,56 +96,95 @@ const App: React.FC = () => {
     
     const activeNest = nests.find(n => n.id === activeNestId) || null;
     const currentNestSheet = activeNest?.sheets[activeSheetIndex] || null;
-
     const selectedTool = tools.find(t => t.id === selectedToolId) || null;
 
-    // Handle Project Load Event
+    // Reset Optimization when sheet changes
     useEffect(() => {
-        const handleProjectLoad = (event: CustomEvent) => {
-            const layout = event.detail as NestLayout;
-            if (layout && layout.id && layout.settings) {
-                // Check if layout already exists or merge
-                setNests(prev => {
-                    const existing = prev.findIndex(n => n.id === layout.id);
-                    if (existing >= 0) {
-                        const copy = [...prev];
-                        copy[existing] = layout;
-                        return copy;
+        setOptimizedOperations(null);
+        setSimulationStep(0);
+        setIsSimulating(false);
+    }, [activeNestId, activeSheetIndex, currentNestSheet]);
+
+    // Simulation Timer
+    useEffect(() => {
+        if (isSimulating && optimizedOperations) {
+            simulationInterval.current = window.setInterval(() => {
+                setSimulationStep(prev => {
+                    if (prev >= optimizedOperations.length - 1) {
+                        setIsSimulating(false);
+                        return prev;
                     }
-                    return [...prev, layout];
+                    return prev + 1;
                 });
-                setActiveNestId(layout.id);
-                addToast("Проект раскроя загружен", "success");
+            }, simulationSpeed);
+        } else {
+            if (simulationInterval.current) {
+                clearInterval(simulationInterval.current);
+                simulationInterval.current = null;
             }
-        };
-        window.addEventListener('fp-load-nest', handleProjectLoad as EventListener);
-        return () => window.removeEventListener('fp-load-nest', handleProjectLoad as EventListener);
-    }, []);
-
-    const activePartProcessedGeometry = useMemo(() => {
-        if (!activePart) return null;
-        return getGeometryFromEntities(activePart);
-    }, [activePart]);
-
-    // Handle Punch Deletion with Keyboard
-    useEffect(() => {
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Delete' && selectedPunchId && mode === AppMode.PartEditor) {
-                handleDeletePunch(selectedPunchId);
-            }
-        };
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedPunchId, activePart, mode]);
-    
-    const handleCanvasClick = (point: Point) => {
-        if (mode === AppMode.Nesting) {
-             return;
         }
+        return () => {
+            if (simulationInterval.current) clearInterval(simulationInterval.current);
+        };
+    }, [isSimulating, optimizedOperations, simulationSpeed]);
 
+    // --- Actions ---
+
+    const handleOpenOptimizer = (forGCode: boolean) => {
+        if (!currentNestSheet) {
+            addToast("Нет листа для обработки", "error");
+            return;
+        }
+        setIsGeneratingGCode(forGCode);
+        setShowOptimizerModal(true);
+    };
+
+    const handleRunOptimization = (finalSettings: OptimizerSettings) => {
+        if (!currentNestSheet) return;
+        setOptimizerSettings(finalSettings);
+        setShowOptimizerModal(false);
+
+        const ops = calculateOptimizedPath(currentNestSheet, parts, tools, finalSettings);
+        setOptimizedOperations(ops);
+        setSimulationStep(0); 
+
+        if (isGeneratingGCode) {
+            const programNumber = activeSheetIndex + 1;
+            const ncFilename = activeNest?.workOrder 
+                ? `${activeNest.workOrder}_${programNumber}.nc` 
+                : `Program_${programNumber}.nc`;
+            const currentClamps = activeNest?.settings.clampPositions || [420, 1010, 1550];
+
+            const code = generateGCode(
+                currentNestSheet, 
+                parts, 
+                tools, 
+                ncFilename,
+                machineSettings,
+                finalSettings,
+                currentClamps,
+                programNumber,
+                ops
+            );
+            setGeneratedGCode(code);
+            setShowGCodeModal(true);
+        } else {
+            addToast(`Оптимизация завершена. ${ops.length} операций.`, "success");
+        }
+    };
+
+    const toggleSimulation = () => setIsSimulating(!isSimulating);
+    const stopSimulation = () => { setIsSimulating(false); setSimulationStep(0); };
+    const stepSimulation = (val: number) => {
+        setIsSimulating(false);
+        if (optimizedOperations) {
+            setSimulationStep(Math.max(0, Math.min(val, optimizedOperations.length - 1)));
+        }
+    };
+
+    const handleCanvasClick = (point: Point) => {
+        if (mode === AppMode.Nesting) return;
         if (mode !== AppMode.PartEditor || !activePart) return;
-        
-        // --- TEACH MODE ---
         if (teachMode) {
              const closestSeg = findClosestSegment(point, activePartProcessedGeometry);
              if (closestSeg) {
@@ -155,19 +192,13 @@ const App: React.FC = () => {
                      s.p1.x === closestSeg.p1.x && s.p1.y === closestSeg.p1.y &&
                      s.p2.x === closestSeg.p2.x && s.p2.y === closestSeg.p2.y
                  ) ?? -1;
-
                  if (idx !== -1) {
                      setSelectedSegmentIds(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx]);
                  }
-                 return;
              }
              return;
         }
-
-        if (selectedPunchId) {
-            setSelectedPunchId(null);
-        }
-        
+        if (selectedPunchId) setSelectedPunchId(null);
         if (!selectedToolId || !selectedTool) return;
 
         const snapResult = findSnapPoint(point, activePartProcessedGeometry, snapMode);
@@ -176,43 +207,18 @@ const App: React.FC = () => {
         switch(manualPunchMode) {
             case ManualPunchMode.Punch: {
                 if (placementReference === PlacementReference.Center) {
-                    addPunchesWithCollisionCheck([{ 
-                        toolId: selectedToolId, 
-                        x: finalPoint.x, 
-                        y: finalPoint.y, 
-                        rotation: punchOrientation 
-                    }]);
+                    addPunchesWithCollisionCheck([{ toolId: selectedToolId, x: finalPoint.x, y: finalPoint.y, rotation: punchOrientation }]);
                     return;
                 }
-
                 const placementAngle = snapResult?.angle ?? 0;
-                const { x, y, rotation } = calculateEdgePlacement(
-                    finalPoint,
-                    placementAngle,
-                    selectedTool,
-                    punchOrientation,
-                    punchOffset,
-                    snapResult?.snapTarget ?? 'middle',
-                    snapResult?.wasNormalized ?? false,
-                    placementSide
-                );
-                
+                const { x, y, rotation } = calculateEdgePlacement(finalPoint, placementAngle, selectedTool, punchOrientation, punchOffset, snapResult?.snapTarget ?? 'middle', snapResult?.wasNormalized ?? false, placementSide);
                 addPunchesWithCollisionCheck([{ toolId: selectedToolId, x, y, rotation }]);
                 break;
             }
             case ManualPunchMode.Nibble: {
                 const closestSeg = findClosestSegment(point, activePartProcessedGeometry);
                 if (closestSeg) {
-                     const punches = generateNibblePunches(
-                        closestSeg.p1, 
-                        closestSeg.p2, 
-                        selectedTool, 
-                        nibbleSettings, 
-                        closestSeg.angle, 
-                        closestSeg.wasNormalized,
-                        punchOrientation,
-                        punchOffset
-                    );
+                     const punches = generateNibblePunches(closestSeg.p1, closestSeg.p2, selectedTool, nibbleSettings, closestSeg.angle, closestSeg.wasNormalized, punchOrientation, punchOffset);
                     addPunchesWithCollisionCheck(punches);
                 }
                 break;
@@ -223,12 +229,7 @@ const App: React.FC = () => {
                     setPunchCreationStep(1);
                 } else {
                     const [startPoint] = punchCreationPoints;
-                    const endPoint = finalPoint;
-                    let newPunchesData: Omit<PlacedTool, 'id'>[] = [];
-                    
-                    if (manualPunchMode === ManualPunchMode.Destruct && selectedTool) {
-                         newPunchesData = generateDestructPunches(startPoint, endPoint, selectedTool, destructSettings);
-                    }
+                    const newPunchesData = generateDestructPunches(startPoint, finalPoint, selectedTool, destructSettings);
                     addPunchesWithCollisionCheck(newPunchesData);
                 }
                 break;
@@ -236,15 +237,10 @@ const App: React.FC = () => {
         }
     };
     
-    // Teach Punch Selection Handler
     const handleTeachPunchSelect = (id: string) => {
-        if (!teachMode) {
-            setSelectedPunchId(id);
-            return;
-        }
+        if (!teachMode) { setSelectedPunchId(id); return; }
         setSelectedTeachPunchIds(prev => prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]);
     };
-
     const handleTeachBulkSelect = (segmentIndices: number[], punchIds: string[], add: boolean) => {
         if (add) {
             setSelectedSegmentIds(prev => Array.from(new Set([...prev, ...segmentIndices])));
@@ -254,82 +250,36 @@ const App: React.FC = () => {
             setSelectedTeachPunchIds(punchIds);
         }
     };
-
     const handleTeachModeToggle = (enable: boolean) => {
-        setTeachMode(enable);
-        setSelectedSegmentIds([]);
-        setSelectedTeachPunchIds([]);
-        if (enable) setSelectedPunchId(null);
+        setTeachMode(enable); setSelectedSegmentIds([]); setSelectedTeachPunchIds([]); if (enable) setSelectedPunchId(null);
     };
-
     const handleCreateCycle = (name: string, symmetry: any) => {
         if (!activePart || !activePartProcessedGeometry) return;
-        
-        const newCycle = createTeachCycleFromSelection(
-            name,
-            symmetry,
-            selectedSegmentIds,
-            selectedTeachPunchIds,
-            activePart,
-            activePartProcessedGeometry
-        );
-
-        if (newCycle) {
-            setTeachCycles(prev => [...prev, newCycle]);
-            handleTeachModeToggle(false); // Exit mode
-        } else {
-            alert("Не удалось создать цикл. Убедитесь, что выбраны линии и инструменты.");
-        }
+        const newCycle = createTeachCycleFromSelection(name, symmetry, selectedSegmentIds, selectedTeachPunchIds, activePart, activePartProcessedGeometry);
+        if (newCycle) { setTeachCycles(prev => [...prev, newCycle]); handleTeachModeToggle(false); }
         setShowTeachSaveModal(false);
     };
+    const handleDeleteCycle = (id: string) => setTeachCycles(prev => prev.filter(c => c.id !== id));
 
-    const handleDeleteCycle = (id: string) => {
-        setTeachCycles(prev => prev.filter(c => c.id !== id));
-    };
+    const { svgRef, viewBox, setViewBox, isDragging, getPointFromEvent, panZoomHandlers } = usePanAndZoom({ x: 0, y: 0, width: 100, height: 100 }, { onClick: handleCanvasClick });
 
-    const { svgRef, viewBox, setViewBox, isDragging, getPointFromEvent, panZoomHandlers } = usePanAndZoom(
-        { x: 0, y: 0, width: 100, height: 100 },
-        { onClick: handleCanvasClick }
-    );
+    const activePartProcessedGeometry = useMemo(() => activePart ? getGeometryFromEntities(activePart) : null, [activePart]);
 
     useEffect(() => {
         if (activePart) {
-            // Y-Up: 0 is bottom. Max Y is top (positive).
-            // SVG ViewBox needs to cover 0 to -Height.
-            setViewBox({
-                x: -5,
-                y: -activePart.geometry.height - 5, 
-                width: activePart.geometry.width + 10,
-                height: activePart.geometry.height + 10
-            });
-             setSelectedPunchId(null);
+            setViewBox({ x: -5, y: -activePart.geometry.height - 5, width: activePart.geometry.width + 10, height: activePart.geometry.height + 10 });
+            setSelectedPunchId(null);
         }
     }, [activePart?.id]); 
 
-     useEffect(() => {
-        setPunchCreationStep(0);
-        setPunchCreationPoints([]);
-    }, [manualPunchMode, activePart]);
-     
-      useEffect(() => {
+    useEffect(() => {
         setSelectedPunchId(null);
         setTeachMode(false);
         if (mode === AppMode.Nesting && activeNest) {
-             // Reset view for nesting sheet
              const sheetToView = activeNest.sheets[activeSheetIndex];
-             // If we have a result sheet, use its dimension. 
-             // If not, try available stock or default.
-             let width = 2500;
-             let height = 1250;
-             if (sheetToView) {
-                 width = sheetToView.width;
-                 height = sheetToView.height;
-             } else {
-                 const stock = activeNest.settings.availableSheets.find(s => s.id === activeNest.settings.activeSheetId) || activeNest.settings.availableSheets[0];
-                 if(stock) { width = stock.width; height = stock.height; }
-             }
-
-             // Y-Up: Content is from 0 to -height in SVG space.
+             let width = 2500, height = 1250;
+             if (sheetToView) { width = sheetToView.width; height = sheetToView.height; }
+             else { const stock = activeNest.settings.availableSheets.find(s => s.id === activeNest.settings.activeSheetId) || activeNest.settings.availableSheets[0]; if(stock) { width = stock.width; height = stock.height; } }
              setViewBox({ x: -50, y: -height - 50, width: width + 100, height: height + 100 });
         }
     }, [mode, activeNestId, activeSheetIndex]);
@@ -337,683 +287,354 @@ const App: React.FC = () => {
     const handleFileUpload = (event: ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (!file) return;
-
         const reader = new FileReader();
         reader.onload = (e) => {
             const content = e.target?.result as string;
             const fileName = file.name;
-            
-            // Handle .cp files (NC Express)
             if (fileName.toLowerCase().endsWith('.cp')) {
-                try {
-                    const parsedPart = parseCp(content, fileName, tools);
-                    if (parsedPart) {
-                        // Detect profile
-                        parsedPart.profile = detectPartProfile(parsedPart.geometry);
-                        
-                        setActivePart(parsedPart);
-                        setMode(AppMode.PartEditor);
-                        addToast(`Файл ${fileName} успешно импортирован.`, "success");
-                        return;
-                    } else {
-                        addToast("Ошибка при разборе CP файла.", "error");
-                        return;
-                    }
-                } catch (err) {
-                    console.error(err);
-                    addToast("Ошибка чтения файла CP.", "error");
-                    return;
-                }
+                const parsedPart = parseCp(content, fileName, tools);
+                if (parsedPart) { parsedPart.profile = detectPartProfile(parsedPart.geometry); setActivePart(parsedPart); setMode(AppMode.PartEditor); addToast(`Файл ${fileName} импортирован.`, "success"); return; }
             }
-
-            // Handle DXF files
             try {
                 const parsedEntities = parseDxf(content);
                 if (parsedEntities.length > 0) {
                     const { path, width, height, bbox } = dxfEntitiesToSvg(parsedEntities);
-                    if (width === 0 || height === 0) {
-                        addToast("Геометрия в файле имеет нулевой размер.", "error");
-                        return;
-                    }
-                    const newPart: Part = {
-                        id: generateId(),
-                        name: fileName.replace(/\.(dxf|DXF)$/, ''),
-                        geometry: { path, width, height, entities: parsedEntities, bbox },
-                        punches: [],
-                        material: { code: 'St-3', thickness: 1.0, dieClearance: 0.2 },
-                        nesting: {
-                            allow0_180: true,
-                            allow90_270: true,
-                            initialRotation: 0,
-                            commonLine: true,
-                            canMirror: false
-                        },
-                        faceWidth: width, 
-                        faceHeight: height 
-                    };
-                    
-                    // Detect Profile (L/U shape via notches)
+                    const newPart: Part = { id: generateId(), name: fileName.replace(/\.(dxf|DXF)$/, ''), geometry: { path, width, height, entities: parsedEntities, bbox }, punches: [], material: { code: 'St-3', thickness: 1.0, dieClearance: 0.2 }, nesting: { allow0_180: true, allow90_270: true, initialRotation: 0, commonLine: true, canMirror: false }, faceWidth: width, faceHeight: height };
                     newPart.profile = detectPartProfile(newPart.geometry);
-
-                    setActivePart(newPart);
-                    setMode(AppMode.PartEditor);
-                    addToast("DXF загружен.", "success");
-                } else {
-                    addToast("Не удалось найти геометрию в DXF файле.", "error");
-                }
-            } catch (error) {
-                console.error("Error during DXF processing:", error);
-                addToast("Ошибка при чтении DXF.", "error");
-            }
+                    setActivePart(newPart); setMode(AppMode.PartEditor); addToast("DXF загружен.", "success");
+                } else addToast("Ошибка DXF.", "error");
+            } catch (error) { addToast("Ошибка DXF.", "error"); }
         };
         reader.readAsText(file);
         event.target.value = '';
     };
 
-    const addPunchesToPart = (punchesData: Omit<PlacedTool, 'id'>[]) => {
-        if (!activePart) return;
-        const newPunches = punchesData.map(p => ({ ...p, id: generateId() }));
-        const updatedPart = { ...activePart, punches: [...activePart.punches, ...newPunches] };
-        setActivePart(updatedPart);
-    };
-    
     const addPunchesWithCollisionCheck = (punchesData: Omit<PlacedTool, 'id'>[]) => {
         if (!activePart) return;
-        addPunchesToPart(punchesData);
-        setPunchCreationStep(0);
-        setPunchCreationPoints([]);
+        const newPunches = punchesData.map(p => ({ ...p, id: generateId() }));
+        setActivePart({ ...activePart, punches: [...activePart.punches, ...newPunches] });
+        setPunchCreationStep(0); setPunchCreationPoints([]);
     };
     
-    const handleDeletePunch = (punchId: string | string[]) => {
-        if (!activePart) return;
-        const idsToDelete = Array.isArray(punchId) ? punchId : [punchId];
-        const updatedPart = { ...activePart, punches: activePart.punches.filter(p => !idsToDelete.includes(p.id)) };
-        setActivePart(updatedPart);
-        if (selectedPunchId && idsToDelete.includes(selectedPunchId)) {
-            setSelectedPunchId(null);
-        }
+    const handleDeletePunch = (id: string | string[]) => {
+        if(!activePart) return;
+        const ids = Array.isArray(id) ? id : [id];
+        setActivePart({...activePart, punches: activePart.punches.filter(p => !ids.includes(p.id))});
     };
+    const handleUpdatePunch = (id: string, updates: Partial<PlacedTool>) => {
+        if(!activePart) return;
+        setActivePart({...activePart, punches: activePart.punches.map(p => p.id === id ? {...p, ...updates} : p)});
+    };
+    const handleSavePartAsScript = () => { if(!activePart) return; const code = generateParametricScript(activePart, tools); setScripts(p => [...p, {id: generateId(), name: activePart.name, code, defaultWidth: activePart.faceWidth, defaultHeight: activePart.faceHeight, updatedAt: Date.now()}]); setActivePart(null); addToast("Скрипт сохранен", "success"); };
+    const handleSavePartAsStatic = () => { if(!activePart) return; const name = generatePartNameFromProfile(getPartBaseName(activePart.name), activePart.profile, activePart.faceWidth, activePart.faceHeight); const p = {...activePart, name}; setParts(pr => [...pr.filter(x=>x.id!==p.id), p]); setActivePart(null); addToast(`Деталь ${name} сохранена`, "success"); };
     
-    const handleUpdatePunch = (punchId: string, updates: Partial<PlacedTool>) => {
-        if (!activePart) return;
-        const updatedPunches = activePart.punches.map(p => p.id === punchId ? { ...p, ...updates } : p);
-        const updatedPart = { ...activePart, punches: updatedPunches };
-        setActivePart(updatedPart);
-    };
+    // --- Async Nesting Runner ---
+    const handleRunNesting = async () => {
+        if(!activeNest || activeNest.scheduledParts.length===0) return;
+        
+        setIsNestingProcessing(true);
+        setNests(n => n.map(x => x.id === activeNestId ? {...x, sheets: []} : x)); // Clear previous
+        setActiveSheetIndex(0);
+        addToast("Запуск глубокого раскроя...", "info");
 
-    const handleDeletePartFromLibrary = (partId: string) => {
-        confirm(
-            "Удаление детали",
-            "Вы уверены, что хотите удалить эту деталь из списка для раскроя?",
-            () => {
-                setParts(prev => prev.filter(p => p.id !== partId));
-                setNests(prevNests => prevNests.map(nest => ({
-                    ...nest,
-                    scheduledParts: nest.scheduledParts.filter(sp => sp.partId !== partId)
-                })));
+        try {
+            // Iterate over generator updates
+            for await (const updatedSheets of nestingGenerator(activeNest.scheduledParts, parts, tools, activeNest.settings)) {
+                setNests(prev => prev.map(n => {
+                    if (n.id === activeNestId) {
+                        return { ...n, sheets: updatedSheets };
+                    }
+                    return n;
+                }));
+                // Optionally jump to latest sheet? Or stay on 0?
+                // setActiveSheetIndex(updatedSheets.length - 1); 
             }
-        );
-    };
-
-    const handleUpdateActivePart = (updates: Partial<Part>) => {
-        if (activePart) {
-            setActivePart({ ...activePart, ...updates });
+            addToast("Раскрой завершен", "success");
+        } catch(e:any) {
+            console.error(e);
+            addToast("Ошибка раскроя: " + e.message, "error");
+        } finally {
+            setIsNestingProcessing(false);
         }
-    }
-
-    const handleClosePart = () => {
-        confirm(
-            "Закрыть редактор?",
-            "Все несохраненные изменения в текущей детали будут потеряны.",
-            () => {
-                setActivePart(null);
-            }
-        );
-    }
-
-    // SCRIPT LIBRARY LOGIC
-    
-    const handleSavePartAsScript = () => {
-        if (!activePart) return;
-        
-        const generatedCode = generateParametricScript(activePart, tools);
-        const newScript: ParametricScript = {
-            id: generateId(),
-            name: activePart.name,
-            code: generatedCode,
-            defaultWidth: activePart.faceWidth,
-            defaultHeight: activePart.faceHeight,
-            updatedAt: Date.now()
-        };
-        
-        setScripts(prev => [...prev, newScript]);
-        setActivePart(null);
-        addToast("Скрипт сохранен в библиотеку", "success");
     };
 
-    const handleSavePartAsStatic = () => {
-        if (!activePart) return;
-        
-        // Auto-correct naming convention before saving
-        const baseName = getPartBaseName(activePart.name);
-        const correctedName = generatePartNameFromProfile(
-            baseName, 
-            activePart.profile, 
-            activePart.faceWidth, 
-            activePart.faceHeight
-        );
-
-        const partToSave = {
-            ...activePart,
-            name: correctedName
-        };
-
-        setParts(prev => {
-            const idx = prev.findIndex(p => p.id === partToSave.id);
-            if (idx > -1) {
-                const copy = [...prev];
-                copy[idx] = partToSave;
-                return copy;
-            }
-            return [...prev, partToSave];
-        });
-        
-        setActivePart(null);
-        addToast(`Деталь "${correctedName}" сохранена`, "success");
+    const downloadGCode = () => {
+        const blob = new Blob([generatedGCode], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        const fileName = activeNest?.workOrder ? `${activeNest.workOrder}_${activeSheetIndex + 1}.nc` : `Program_${activeSheetIndex + 1}.nc`;
+        link.download = fileName; document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
     };
 
-    const handleSaveScript = (script: ParametricScript) => {
-        setScripts(prev => {
-            const idx = prev.findIndex(s => s.id === script.id);
-            if (idx > -1) {
-                const copy = [...prev];
-                copy[idx] = script;
-                return copy;
-            }
-            return [...prev, script];
-        });
-        addToast("Скрипт обновлен", "success");
-    };
-
-    const handleDeleteScript = (id: string) => {
-        setScripts(prev => prev.filter(s => s.id !== id));
-    };
-
-    const handleCreatePartFromScript = (part: Part) => {
-        setParts(prev => [...prev, part]);
-        addToast(`Деталь "${part.name}" добавлена к списку для раскроя`, "success");
-    }
-
-    // Batch processing from Excel
-    const handleBatchProcess = (newLibraryParts: Part[], newScheduledParts: ScheduledPart[]) => {
-        // 1. Add new generated parts to library (if distinct)
-        if (newLibraryParts.length > 0) {
-            setParts(prev => [...prev, ...newLibraryParts]);
-        }
-
-        // 2. Add scheduled parts to active nest
-        if (newScheduledParts.length > 0) {
-            setNests(prevNests => prevNests.map(nest => {
-                if (nest.id === activeNestId) {
-                    const mergedSchedule = [...nest.scheduledParts];
-                    newScheduledParts.forEach(np => {
-                        const existing = mergedSchedule.find(ex => ex.partId === np.partId);
-                        if (existing) {
-                            existing.quantity += np.quantity;
-                        } else {
-                            mergedSchedule.push(np);
-                        }
-                    });
-                    return { ...nest, scheduledParts: mergedSchedule };
-                }
-                return nest;
-            }));
-        }
-
-        addToast(`Пакетная обработка завершена. Добавлено ${newScheduledParts.reduce((acc,p)=>acc+p.quantity,0)} деталей.`, "success");
-    };
-
-    const handleLoadPart = (part: Part) => {
+    const handleLoadPartFromLibrary = (part: Part) => {
         setActivePart(part);
         setMode(AppMode.PartEditor);
     };
-
+    const handleDeletePartFromLibrary = (id: string) => {
+        confirm("Удаление", "Удалить деталь из библиотеки?", () => {
+            setParts(p => p.filter(x => x.id !== id));
+            setNests(n => n.map(x => ({...x, scheduledParts: x.scheduledParts.filter(s => s.partId !== id)})));
+        });
+    };
     const handleUpdatePartInLibrary = (updatedPart: Part) => {
         setParts(prev => prev.map(p => p.id === updatedPart.id ? updatedPart : p));
         addToast("Деталь обновлена", "success");
     };
 
-    const handleOpenAutoPunchSettings = () => {
-        if (!activePart) return;
-        setShowAutoPunchSettingsModal(true);
+    const handleSaveScript = (updatedScript: ParametricScript) => {
+        setScripts(prev => prev.map(s => s.id === updatedScript.id ? updatedScript : s));
+        addToast("Скрипт обновлен", "success");
     };
-    
-    const handleApplyAutoPunch = (settings: AutoPunchSettings) => {
-        if (!activePart) return;
-        const newPunchesData = generateContourPunches(
-            activePart.geometry, 
-            tools, 
-            settings, 
-            turretLayouts,
-            teachCycles
-        );
-        addPunchesWithCollisionCheck(newPunchesData);
-        setShowAutoPunchSettingsModal(false);
-        addToast(`Сгенерировано ударов: ${newPunchesData.length}`, "success");
+    const handleDeleteScript = (id: string) => {
+        confirm("Удаление", "Удалить скрипт?", () => setScripts(prev => prev.filter(s => s.id !== id)));
     };
-    
-    const handleRunNesting = () => {
-        if (!activeNest) return;
+    const handleCreatePartFromScript = (newPart: Part) => {
+        setParts(prev => [...prev, newPart]);
+        addToast(`Деталь ${newPart.name} создана`, "success");
+    };
+    const handleBatchProcess = (newParts: Part[], newScheduledParts: ScheduledPart[]) => {
+        setParts(prev => {
+            const ids = new Set(prev.map(p => p.id));
+            const distinctNew = newParts.filter(p => !ids.has(p.id));
+            return [...prev, ...distinctNew];
+        });
         
-        if (activeNest.scheduledParts.length === 0) {
-            addToast("Нет деталей для раскроя.", "error");
-            return;
-        }
-
-        try {
-            const generatedSheets = performNesting(activeNest.scheduledParts, parts, tools, activeNest.settings);
-            
-            if (generatedSheets.length === 0) {
-                 addToast("Не удалось разместить детали. Проверьте размеры листа.", "error");
-            } else {
-                 const updatedNest = { ...activeNest, sheets: generatedSheets };
-                 setNests(nests.map(n => n.id === activeNestId ? updatedNest : n));
-                 setActiveSheetIndex(0); // Reset to first sheet
-                 addToast(`Раскрой завершен. Листов: ${generatedSheets.length}`, "success");
-            }
-        } catch (e: any) {
-            console.error(e);
-            addToast(`Ошибка раскроя: ${e.message}`, "error");
+        if (activeNestId) {
+            setNests(prev => prev.map(n => {
+                if (n.id === activeNestId) {
+                    const existingMap = new Map<string, ScheduledPart>();
+                    n.scheduledParts.forEach(s => existingMap.set(s.partId, { ...s }));
+                    
+                    newScheduledParts.forEach(ns => {
+                        if (existingMap.has(ns.partId)) {
+                            const ex = existingMap.get(ns.partId)!;
+                            ex.quantity += ns.quantity;
+                        } else {
+                            existingMap.set(ns.partId, ns);
+                        }
+                    });
+                    return { ...n, scheduledParts: Array.from(existingMap.values()) };
+                }
+                return n;
+            }));
+            addToast(`Добавлено ${newParts.length} деталей и ${newScheduledParts.length} позиций в раскрой`, "success");
         }
     };
 
-    const handleClearNest = () => {
-        if (!activeNest) return;
-        confirm(
-            "Очистить результат",
-            "Вы уверены, что хотите сбросить все результаты раскроя?",
-            () => {
-                const updatedNest = { ...activeNest, sheets: [] };
-                setNests(nests.map(n => n.id === activeNestId ? updatedNest : n));
-                setSelectedNestPartId(null);
-                setActiveSheetIndex(0);
-                addToast("Результаты сброшены", "info");
-            }
-        );
+    const handleSaveTool = (tool: Tool) => {
+        if (!tool.id) tool.id = generateId();
+        setTools(prev => {
+            const exists = prev.find(t => t.id === tool.id);
+            if (exists) return prev.map(t => t.id === tool.id ? tool : t);
+            return [...prev, tool];
+        });
+        addToast("Инструмент сохранен", "success");
     };
-
-    const handleMoveNestPart = (partId: string, dx: number, dy: number) => {
-        if (!activeNest || !currentNestSheet) return;
-        
-        const updatedSheet = {
-            ...currentNestSheet,
-            placedParts: currentNestSheet.placedParts.map(pp => 
-                pp.id === partId ? { ...pp, x: pp.x + dx, y: pp.y + dy } : pp
-            )
-        };
-
-        const updatedSheets = [...activeNest.sheets];
-        updatedSheets[activeSheetIndex] = updatedSheet;
-
-        const updatedNest = { ...activeNest, sheets: updatedSheets };
-        setNests(nests.map(n => n.id === activeNestId ? updatedNest : n));
+    const handleDeleteTool = (id: string) => {
+        confirm("Удаление", "Удалить инструмент?", () => setTools(prev => prev.filter(t => t.id !== id)));
     };
-
-    const handleRotateNestPart = (partId: string) => {
-        if (!activeNest || !currentNestSheet) return;
-        
-        const updatedSheet = {
-             ...currentNestSheet,
-             placedParts: currentNestSheet.placedParts.map(pp => {
-                 if (pp.id === partId) {
-                     const part = parts.find(p => p.id === pp.partId);
-                     if (!part) return pp;
-
-                     const w = part.geometry.width;
-                     const h = part.geometry.height;
-                     
-                     const oldRotRad = (pp.rotation * Math.PI) / 180;
-                     const newRotDeg = (pp.rotation + 90) % 360;
-                     const newRotRad = (newRotDeg * Math.PI) / 180;
-
-                     const cxOld = (w / 2) * Math.cos(oldRotRad) - (h / 2) * Math.sin(oldRotRad);
-                     const cyOld = (w / 2) * Math.sin(oldRotRad) + (h / 2) * Math.cos(oldRotRad);
-
-                     const cxNew = (w / 2) * Math.cos(newRotRad) - (h / 2) * Math.sin(newRotRad);
-                     const cyNew = (w / 2) * Math.sin(newRotRad) + (h / 2) * Math.cos(newRotRad);
-
-                     return { 
-                         ...pp, 
-                         rotation: newRotDeg,
-                         x: pp.x + (cxOld - cxNew),
-                         y: pp.y + (cyOld - cyNew)
-                     };
-                 }
-                 return pp;
-             })
-        };
-        
-        const updatedSheets = [...activeNest.sheets];
-        updatedSheets[activeSheetIndex] = updatedSheet;
-
-        const updatedNest = { ...activeNest, sheets: updatedSheets };
-        setNests(nests.map(n => n.id === activeNestId ? updatedNest : n));
-    };
-    
-    const handleSelectNestPart = (id: string | null) => {
-        setSelectedNestPartId(id);
-    };
-
-    // Triggered when clicking "Post-processor"
-    const handleGenerateGCode = () => {
-        if (!currentNestSheet) {
-            addToast("Нет листа для генерации", "error");
-            return;
-        }
-        setShowOptimizerModal(true);
-    };
-
-    // Triggered after Optimizer Modal confirms
-    const handleFinalizeGCode = (finalOptimizerSettings: OptimizerSettings) => {
-        if (!currentNestSheet) return;
-        setOptimizerSettings(finalOptimizerSettings); // Update state with latest
-        
-        // Pass clampPositions from the active nest settings
-        const currentClamps = activeNest?.settings.clampPositions || [420, 1010, 1550];
-        
-        // Program Number = Sheet Index + 1 (e.g., O0001 for Sheet 1)
-        const programNumber = activeSheetIndex + 1;
-
-        // Filename for NC header (O-number comment)
-        const ncFilename = activeNest?.workOrder 
-            ? `${activeNest.workOrder}_${programNumber}.nc` 
-            : `Program_${programNumber}.nc`;
-
-        const code = generateGCode(
-            currentNestSheet, 
-            parts, 
-            tools, 
-            ncFilename, // Pass specific filename, NOT nest name
-            machineSettings,
-            finalOptimizerSettings,
-            currentClamps,
-            programNumber
-        );
-        
-        setGeneratedGCode(code);
-        setShowOptimizerModal(false);
-        setShowGCodeModal(true);
-    };
-    
-    const downloadGCode = () => {
-        if (!generatedGCode) return;
-        const blob = new Blob([generatedGCode], { type: 'text/plain;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        
-        // Filename format: [WorkOrder]_[SheetNum].nc
-        const fileName = activeNest?.workOrder 
-            ? `${activeNest.workOrder}_${activeSheetIndex + 1}.nc` 
-            : `Program_${activeSheetIndex + 1}.nc`;
-            
-        link.download = fileName;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-    };
-
-    const handleSaveTool = (toolToSave: Tool) => {
-        const toolIndex = tools.findIndex(t => t.id === toolToSave.id);
-
-        if (toolIndex > -1) {
-            const newTools = [...tools];
-            newTools[toolIndex] = toolToSave;
-            setTools(newTools.sort((a, b) => a.name.localeCompare(b.name)));
-        } else {
-            const newToolWithId = { ...toolToSave, id: generateId() };
-            setTools([...tools, newToolWithId].sort((a, b) => a.name.localeCompare(b.name)));
-        }
-    };
-
-    const handleDeleteTool = (toolId: string) => {
-        confirm(
-            "Удаление инструмента",
-            "Вы уверены, что хотите удалить этот инструмент? Это действие нельзя отменить.",
-            () => {
-                setTools(prev => prev.filter(t => t.id !== toolId));
-            }
-        );
-    };
-    
-    const handleCyclePunchOrientation = () => {
-        setPunchOrientation(current => (current + 90) % 360);
-    };
-
-    const handleUpdateNestingSettings = (newSettings: NestLayout['settings'], newScheduledParts: ScheduledPart[]) => {
-        if (!activeNest) return;
-        const updatedNest = {
-            ...activeNest,
-            settings: newSettings,
-            scheduledParts: newScheduledParts
-        };
-        setNests(nests.map(n => n.id === activeNestId ? updatedNest : n));
-    }
-
-    const handleUpdateNestMetadata = (metadata: { customer?: string, workOrder?: string }) => {
-        if (!activeNest) return;
-        const updatedNest = { ...activeNest, ...metadata };
-        setNests(nests.map(n => n.id === activeNestId ? updatedNest : n));
-    };
-
-    // Calculate report full file path string for display
-    const reportFilePath = useMemo(() => {
-        const year = new Date().getFullYear();
-        const customer = activeNest?.customer || 'Unknown';
-        const order = activeNest?.workOrder || 'NoOrder';
-        const file = activeNest?.workOrder ? `${activeNest.workOrder}_${activeSheetIndex + 1}.nc` : `Program_${activeSheetIndex + 1}.nc`;
-        // Removed spaces around slashes
-        return `${year}/${customer}/${order}/${file}`;
-    }, [activeNest, activeSheetIndex]);
-
-    const renderContent = () => {
-        if (mode === AppMode.ToolLibrary) {
-            return (
-                <ToolLibraryView 
-                    tools={tools} 
-                    onSaveTool={handleSaveTool} 
-                    onDeleteTool={handleDeleteTool} 
-                />
-            );
-        }
-        if (mode === AppMode.ScriptLibrary) {
-            return (
-                <ScriptLibraryView 
-                    scripts={scripts}
-                    tools={tools}
-                    parts={parts}
-                    onSaveScript={handleSaveScript}
-                    onDeleteScript={handleDeleteScript}
-                    onCreatePart={handleCreatePartFromScript}
-                    onBatchProcess={handleBatchProcess}
-                />
-            );
-        }
-        if (mode === AppMode.PartLibrary) {
-            return (
-                <PartLibraryView 
-                    parts={parts}
-                    tools={tools}
-                    onLoadPart={handleLoadPart}
-                    onDeletePart={handleDeletePartFromLibrary}
-                    onUpdatePart={handleUpdatePartInLibrary}
-                />
-            );
-        }
-        if (mode === AppMode.TurretSetup) {
-            return (
-                <TurretSetupView 
-                    tools={tools}
-                    setTools={setTools}
-                    layouts={turretLayouts}
-                    setLayouts={setTurretLayouts}
-                />
-            );
-        }
-        if (mode === AppMode.MachineSetup) {
-            return (
-                <MachineSetupView 
-                    settings={machineSettings}
-                    onUpdate={setMachineSettings}
-                />
-            );
-        }
-        
-        return (
-            <>
-                <Sidebar 
-                    mode={mode}
-                    parts={parts} 
-                    activePart={activePart}
-                    activePartId={activePart?.id || null}
-                    setActivePartId={() => {}} 
-                    onDeletePart={handleDeletePartFromLibrary}
-                    tools={tools}
-                    activeNest={activeNest}
-                    activeSheetIndex={activeSheetIndex}
-                    setActiveSheetIndex={setActiveSheetIndex}
-                    onFileUpload={handleFileUpload}
-                    manualPunchMode={manualPunchMode}
-                    setManualPunchMode={setManualPunchMode}
-                    selectedToolId={selectedToolId}
-                    setSelectedToolId={setSelectedToolId}
-                    selectedPunchId={selectedPunchId}
-                    setSelectedPunchId={setSelectedPunchId}
-                    onDeletePunch={handleDeletePunch}
-                    onUpdatePunch={handleUpdatePunch}
-                    placementReference={placementReference}
-                    setPlacementReference={setPlacementReference}
-                    placementSide={placementSide}
-                    setPlacementSide={setPlacementSide}
-                    punchOrientation={punchOrientation}
-                    setPunchOrientation={setPunchOrientation}
-                    onCyclePunchOrientation={handleCyclePunchOrientation}
-                    snapMode={snapMode}
-                    setSnapMode={setSnapMode}
-                    punchOffset={punchOffset}
-                    setPunchOffset={setPunchOffset}
-                    // Nesting Sidebar Logic
-                    onUpdateNestingSettings={handleUpdateNestingSettings}
-                    onUpdateNestMetadata={handleUpdateNestMetadata}
-                    nibbleSettings={nibbleSettings}
-                    setNibbleSettings={setNibbleSettings}
-                    destructSettings={destructSettings}
-                    setDestructSettings={setDestructSettings}
-                    onOpenTurretView={() => setMode(AppMode.TurretSetup)}
-                    onSavePartAsScript={handleSavePartAsScript}
-                    onSavePartAsStatic={handleSavePartAsStatic}
-                    onUpdateActivePart={handleUpdateActivePart}
-                    onClosePart={handleClosePart}
-                    // Teach Mode Props
-                    teachMode={teachMode}
-                    setTeachMode={handleTeachModeToggle}
-                    onSaveTeachCycle={() => setShowTeachSaveModal(true)}
-                    teachCycles={teachCycles}
-                    onDeleteTeachCycle={handleDeleteCycle}
-                    // Nesting Props
-                    onRunNesting={handleRunNesting}
-                    onClearNest={handleClearNest}
-                    selectedNestPartId={selectedNestPartId}
-                    onMoveNestPart={handleMoveNestPart}
-                    onRotateNestPart={handleRotateNestPart}
-                />
-                <CanvasArea 
-                    mode={mode}
-                    activePart={activePart}
-                    processedGeometry={activePartProcessedGeometry}
-                    activeNest={activeNest}
-                    currentNestSheet={currentNestSheet}
-                    tools={tools}
-                    parts={parts}
-                    svgRef={svgRef}
-                    viewBox={viewBox}
-                    setViewBox={setViewBox}
-                    isDragging={isDragging}
-                    panZoomHandlers={panZoomHandlers}
-                    getPointFromEvent={getPointFromEvent}
-                    onOpenAutoPunchSettings={handleOpenAutoPunchSettings}
-                    punchCreationStep={punchCreationStep}
-                    punchCreationPoints={punchCreationPoints}
-                    manualPunchMode={manualPunchMode}
-                    selectedToolId={selectedToolId}
-                    selectedPunchId={selectedPunchId}
-                    onSelectPunch={handleTeachPunchSelect}
-                    placementReference={placementReference}
-                    placementSide={placementSide}
-                    punchOrientation={punchOrientation}
-                    snapMode={snapMode}
-                    punchOffset={punchOffset}
-                    nibbleSettings={nibbleSettings}
-                    // Teach Mode
-                    teachMode={teachMode}
-                    selectedSegmentIds={selectedSegmentIds}
-                    selectedTeachPunchIds={selectedTeachPunchIds}
-                    onTeachBulkSelect={handleTeachBulkSelect}
-                    // Nesting
-                    selectedNestPartId={selectedNestPartId}
-                    onSelectNestPart={handleSelectNestPart}
-                    onMoveNestPart={handleMoveNestPart}
-                />
-                <RightPanel 
-                    tools={tools}
-                    selectedToolId={selectedToolId}
-                    setSelectedToolId={setSelectedToolId}
-                    onOpenTurretView={() => setMode(AppMode.TurretSetup)}
-                    // Nesting Props
-                    isNestingMode={mode === AppMode.Nesting}
-                    activeNest={activeNest}
-                    activeSheetIndex={activeSheetIndex}
-                    setActiveSheetIndex={setActiveSheetIndex}
-                    allParts={parts}
-                />
-            </>
-        );
-    }
 
     return (
         <div className="flex flex-col h-full font-sans relative">
             <Header 
                 mode={mode} 
                 setMode={setMode} 
-                onGenerateGCode={handleGenerateGCode}
+                onGenerateGCode={() => handleOpenOptimizer(true)} 
+                onOptimizePath={() => handleOpenOptimizer(false)}
                 onOpenTurretConfig={() => setMode(AppMode.TurretSetup)}
             />
 
             <div className="flex flex-1 overflow-hidden">
-                 {renderContent()}
+                {(mode === AppMode.PartEditor || mode === AppMode.Nesting) ? (
+                    <>
+                        <Sidebar 
+                            mode={mode}
+                            parts={parts} 
+                            activePart={activePart}
+                            activePartId={activePart?.id || null}
+                            setActivePartId={() => {}} 
+                            onDeletePart={handleDeletePartFromLibrary}
+                            tools={tools}
+                            activeNest={activeNest}
+                            activeSheetIndex={activeSheetIndex}
+                            setActiveSheetIndex={setActiveSheetIndex}
+                            onFileUpload={handleFileUpload}
+                            manualPunchMode={manualPunchMode} setManualPunchMode={setManualPunchMode}
+                            selectedToolId={selectedToolId} setSelectedToolId={setSelectedToolId}
+                            selectedPunchId={selectedPunchId} setSelectedPunchId={setSelectedPunchId}
+                            onDeletePunch={handleDeletePunch} onUpdatePunch={handleUpdatePunch}
+                            placementReference={placementReference} setPlacementReference={setPlacementReference}
+                            placementSide={placementSide} setPlacementSide={setPlacementSide}
+                            punchOrientation={punchOrientation} setPunchOrientation={setPunchOrientation} onCyclePunchOrientation={() => setPunchOrientation((punchOrientation+90)%360)}
+                            snapMode={snapMode} setSnapMode={setSnapMode}
+                            punchOffset={punchOffset} setPunchOffset={setPunchOffset}
+                            onUpdateNestingSettings={(s, sp) => setNests(prev => prev.map(n => n.id === activeNestId ? { ...n, settings: s, scheduledParts: sp } : n))}
+                            onUpdateNestMetadata={(m) => setNests(prev => prev.map(n => n.id === activeNestId ? { ...n, ...m } : n))}
+                            nibbleSettings={nibbleSettings} setNibbleSettings={setNibbleSettings}
+                            destructSettings={destructSettings} setDestructSettings={setDestructSettings}
+                            onOpenTurretView={() => setMode(AppMode.TurretSetup)}
+                            onSavePartAsScript={handleSavePartAsScript}
+                            onSavePartAsStatic={handleSavePartAsStatic}
+                            onUpdateActivePart={(u) => setActivePart(p => p ? {...p, ...u} : null)}
+                            onClosePart={() => confirm("Закрыть?", "Изменения будут потеряны.", () => setActivePart(null))}
+                            teachMode={teachMode} setTeachMode={handleTeachModeToggle}
+                            onSaveTeachCycle={() => setShowTeachSaveModal(true)}
+                            teachCycles={teachCycles} onDeleteTeachCycle={handleDeleteCycle}
+                            onRunNesting={handleRunNesting}
+                            isNestingProcessing={isNestingProcessing}
+                            onClearNest={() => confirm("Сброс", "Очистить раскрой?", () => { setNests(prev => prev.map(n => n.id === activeNestId ? { ...n, sheets: [] } : n)); setSelectedNestPartId(null); setActiveSheetIndex(0); })}
+                            selectedNestPartId={selectedNestPartId}
+                            onMoveNestPart={(id, dx, dy) => {
+                                if(activeNest && currentNestSheet) {
+                                    const newSheets = [...activeNest.sheets];
+                                    newSheets[activeSheetIndex] = {...currentNestSheet, placedParts: currentNestSheet.placedParts.map(p => p.id === id ? {...p, x: p.x+dx, y: p.y+dy} : p)};
+                                    setNests(n => n.map(x => x.id === activeNestId ? {...x, sheets: newSheets} : x));
+                                }
+                            }}
+                            onRotateNestPart={(id) => {
+                                if(activeNest && currentNestSheet) {
+                                    const newSheets = [...activeNest.sheets];
+                                    newSheets[activeSheetIndex] = {
+                                        ...currentNestSheet, 
+                                        placedParts: currentNestSheet.placedParts.map(pp => {
+                                            if(pp.id !== id) return pp;
+                                            const part = parts.find(p=>p.id===pp.partId); if(!part) return pp;
+                                            const w = part.geometry.width; const h = part.geometry.height;
+                                            const oldR = pp.rotation * Math.PI / 180; const newR = ((pp.rotation+90)%360) * Math.PI / 180;
+                                            const cxOld = (w/2)*Math.cos(oldR) - (h/2)*Math.sin(oldR); const cyOld = (w/2)*Math.sin(oldR) + (h/2)*Math.cos(oldR);
+                                            const cxNew = (w/2)*Math.cos(newR) - (h/2)*Math.sin(newR); const cyNew = (w/2)*Math.sin(newR) + (h/2)*Math.cos(newR);
+                                            return {...pp, rotation: (pp.rotation+90)%360, x: pp.x + (cxOld-cxNew), y: pp.y + (cyOld-cyNew)};
+                                        })
+                                    };
+                                    setNests(n => n.map(x => x.id === activeNestId ? {...x, sheets: newSheets} : x));
+                                }
+                            }}
+                        />
+                        <CanvasArea 
+                            mode={mode}
+                            activePart={activePart}
+                            processedGeometry={activePartProcessedGeometry}
+                            activeNest={activeNest}
+                            currentNestSheet={currentNestSheet}
+                            tools={tools}
+                            parts={parts}
+                            svgRef={svgRef}
+                            viewBox={viewBox}
+                            setViewBox={setViewBox}
+                            isDragging={isDragging}
+                            getPointFromEvent={getPointFromEvent}
+                            panZoomHandlers={panZoomHandlers}
+                            onOpenAutoPunchSettings={() => setShowAutoPunchSettingsModal(true)}
+                            punchCreationStep={punchCreationStep}
+                            punchCreationPoints={punchCreationPoints}
+                            manualPunchMode={manualPunchMode}
+                            selectedToolId={selectedToolId}
+                            selectedPunchId={selectedPunchId}
+                            onSelectPunch={setSelectedPunchId}
+                            placementReference={placementReference}
+                            placementSide={placementSide}
+                            punchOrientation={punchOrientation}
+                            snapMode={snapMode}
+                            punchOffset={punchOffset}
+                            nibbleSettings={nibbleSettings}
+                            teachMode={teachMode}
+                            selectedSegmentIds={selectedSegmentIds}
+                            selectedTeachPunchIds={selectedTeachPunchIds}
+                            onTeachBulkSelect={handleTeachBulkSelect}
+                            selectedNestPartId={selectedNestPartId}
+                            onSelectNestPart={setSelectedNestPartId}
+                            onMoveNestPart={(id, dx, dy) => {
+                                 if(activeNest && currentNestSheet) {
+                                    const newSheets = [...activeNest.sheets];
+                                    newSheets[activeSheetIndex] = {...currentNestSheet, placedParts: currentNestSheet.placedParts.map(p => p.id === id ? {...p, x: p.x+dx, y: p.y+dy} : p)};
+                                    setNests(n => n.map(x => x.id === activeNestId ? {...x, sheets: newSheets} : x));
+                                }
+                            }}
+                            optimizedOperations={optimizedOperations}
+                            simulationStep={simulationStep}
+                        />
+                        <RightPanel 
+                            tools={tools}
+                            selectedToolId={selectedToolId}
+                            setSelectedToolId={setSelectedToolId}
+                            onOpenTurretView={() => setMode(AppMode.TurretSetup)}
+                            isNestingMode={mode === AppMode.Nesting}
+                            activeNest={activeNest}
+                            activeSheetIndex={activeSheetIndex}
+                            setActiveSheetIndex={setActiveSheetIndex}
+                            allParts={parts}
+                            simulationStep={simulationStep}
+                            totalSimulationSteps={optimizedOperations ? optimizedOperations.length : 0}
+                            isSimulating={isSimulating}
+                            simulationSpeed={simulationSpeed}
+                            onToggleSimulation={toggleSimulation}
+                            onStopSimulation={stopSimulation}
+                            onStepChange={stepSimulation}
+                            onSpeedChange={setSimulationSpeed}
+                            optimizedOperations={optimizedOperations}
+                        />
+                    </>
+                ) : (
+                    mode === AppMode.PartLibrary ? (
+                        <PartLibraryView 
+                            parts={parts} 
+                            tools={tools}
+                            onLoadPart={handleLoadPartFromLibrary}
+                            onDeletePart={handleDeletePartFromLibrary}
+                            onUpdatePart={handleUpdatePartInLibrary}
+                        />
+                    ) : mode === AppMode.ScriptLibrary ? (
+                        <ScriptLibraryView 
+                            scripts={scripts} 
+                            tools={tools} 
+                            parts={parts}
+                            onSaveScript={handleSaveScript}
+                            onDeleteScript={handleDeleteScript}
+                            onCreatePart={handleCreatePartFromScript}
+                            onBatchProcess={handleBatchProcess}
+                        />
+                    ) : mode === AppMode.ToolLibrary ? (
+                        <ToolLibraryView 
+                            tools={tools} 
+                            onSaveTool={handleSaveTool} 
+                            onDeleteTool={handleDeleteTool} 
+                        />
+                    ) : mode === AppMode.TurretSetup ? (
+                        <TurretSetupView 
+                            tools={tools} 
+                            setTools={setTools} 
+                            layouts={turretLayouts} 
+                            setLayouts={setTurretLayouts} 
+                        />
+                    ) : mode === AppMode.MachineSetup ? (
+                        <MachineSetupView 
+                            settings={machineSettings} 
+                            onUpdate={setMachineSettings} 
+                        />
+                    ) : null
+                )}
             </div>
 
             {showAutoPunchSettingsModal && activePart && (
                 <AutoPunchSettingsModal 
                     onClose={() => setShowAutoPunchSettingsModal(false)}
-                    onApply={handleApplyAutoPunch}
+                    onApply={(s) => { 
+                        const punches = generateContourPunches(activePart.geometry, tools, s, turretLayouts, teachCycles); 
+                        addPunchesWithCollisionCheck(punches); 
+                        setShowAutoPunchSettingsModal(false); 
+                        addToast(`Сгенерировано: ${punches.length}`, "success"); 
+                    }}
                     turretLayouts={turretLayouts}
                 />
             )}
-            {showTeachSaveModal && (
-                <TeachCycleSaveModal 
-                    onClose={() => setShowTeachSaveModal(false)}
-                    onSave={handleCreateCycle}
-                />
-            )}
+            {showTeachSaveModal && <TeachCycleSaveModal onClose={() => setShowTeachSaveModal(false)} onSave={handleCreateCycle} />}
             
-            {/* Optimizer Modal appears BEFORE G-Code generation */}
             {showOptimizerModal && (
                 <OptimizerSettingsModal
                     initialSettings={optimizerSettings}
                     onClose={() => setShowOptimizerModal(false)}
-                    onGenerate={handleFinalizeGCode}
+                    onGenerate={handleRunOptimization}
                 />
             )}
 
@@ -1022,13 +643,13 @@ const App: React.FC = () => {
                     gcode={generatedGCode} 
                     onClose={() => setShowGCodeModal(false)} 
                     onDownload={downloadGCode}
-                    // Report Data
                     sheet={currentNestSheet || undefined}
                     parts={parts}
                     tools={tools}
                     clampPositions={activeNest?.settings.clampPositions}
                     scheduledParts={activeNest?.scheduledParts}
-                    nestName={reportFilePath} // Pass full formatted path here
+                    nestName={activeNest?.workOrder ? `${activeNest.workOrder}_${activeSheetIndex + 1}.nc` : `Program_${activeSheetIndex + 1}.nc`}
+                    allSheets={activeNest?.sheets}
                 />
             )}
             

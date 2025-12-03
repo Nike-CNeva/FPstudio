@@ -1,17 +1,18 @@
 
 import React from 'react';
 import { AppMode } from '../types';
-import { BoxIcon, CodeIcon, GridIcon, LayersIcon, TurretIcon, FolderIcon, SettingsIcon } from './Icons';
+import { BoxIcon, CodeIcon, GridIcon, LayersIcon, TurretIcon, FolderIcon, SettingsIcon, PlayIcon } from './Icons';
 import { NavButton } from './common/Button';
 
 interface HeaderProps {
     mode: AppMode;
     setMode: (mode: AppMode) => void;
     onGenerateGCode: () => void;
+    onOptimizePath: () => void;
     onOpenTurretConfig: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ mode, setMode, onGenerateGCode, onOpenTurretConfig }) => (
+export const Header: React.FC<HeaderProps> = ({ mode, setMode, onGenerateGCode, onOptimizePath, onOpenTurretConfig }) => (
     <header className="flex items-center justify-between bg-gray-900 text-white p-2 shadow-md z-20">
         <div className="flex items-center space-x-4">
             <h1 className="text-xl font-bold text-blue-400">FP Studio</h1>
@@ -32,6 +33,12 @@ export const Header: React.FC<HeaderProps> = ({ mode, setMode, onGenerateGCode, 
              >
                  <SettingsIcon className="w-6 h-6" />
              </button>
+             {mode === AppMode.Nesting && (
+                 <button onClick={onOptimizePath} className="flex items-center space-x-2 bg-yellow-600 hover:bg-yellow-700 px-4 py-2 rounded-md text-sm font-semibold transition-colors">
+                    <PlayIcon className="w-5 h-5"/>
+                    <span>Оптимизация</span>
+                </button>
+             )}
              <button onClick={onGenerateGCode} className="flex items-center space-x-2 bg-green-600 hover:bg-green-700 px-4 py-2 rounded-md text-sm font-semibold transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed" disabled={mode !== AppMode.Nesting}>
                 <CodeIcon className="w-5 h-5"/>
                 <span>Постпроцессор</span>

@@ -1,3 +1,4 @@
+
 import React, { ChangeEvent, useRef } from 'react';
 import { AppMode, NestLayout, Part, Tool, ManualPunchMode, PlacementReference, SnapMode, NibbleSettings, DestructSettings, PlacedTool, PlacementSide, TeachCycle, ScheduledPart } from '../../types';
 import { FolderIcon, SaveIcon, PlusIcon, TrashIcon, PlayIcon, SettingsIcon, CodeIcon } from './Icons';
@@ -67,6 +68,7 @@ interface SidebarProps {
     onDeleteTeachCycle: (id: string) => void;
     // Nesting Actions
     onRunNesting?: () => void;
+    isNestingProcessing?: boolean; // New prop
     onClearNest?: () => void;
     selectedNestPartId?: string | null;
     onMoveNestPart?: (id: string, dx: number, dy: number) => void;
@@ -83,7 +85,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     nibbleSettings, setNibbleSettings, destructSettings, setDestructSettings,
     onSavePartAsScript, onSavePartAsStatic, onUpdateActivePart, onClosePart,
     teachMode, setTeachMode, onSaveTeachCycle, teachCycles, onDeleteTeachCycle,
-    onRunNesting, onClearNest, selectedNestPartId, onMoveNestPart, onRotateNestPart
+    onRunNesting, isNestingProcessing, onClearNest, selectedNestPartId, onMoveNestPart, onRotateNestPart
 }) => {
     const [sidebarTab, setSidebarTab] = React.useState<'properties' | 'punching' | 'teach'>('properties');
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -242,12 +244,28 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     </div>
                     
                     <div className="mt-4 pt-4 border-t border-gray-600 space-y-3 flex-none">
-                        <button onClick={onRunNesting} className="w-full flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 p-3 rounded-md shadow-lg font-bold text-white">
-                            <PlayIcon className="w-5 h-5"/>
-                            <span>Выполнить Раскрой</span>
+                        <button 
+                            onClick={onRunNesting} 
+                            disabled={isNestingProcessing}
+                            className={`w-full flex items-center justify-center space-x-2 p-3 rounded-md shadow-lg font-bold text-white transition-all ${isNestingProcessing ? 'bg-yellow-600 cursor-progress' : 'bg-blue-600 hover:bg-blue-700'}`}
+                        >
+                            {isNestingProcessing ? (
+                                <>
+                                    <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    <span>Выполняется...</span>
+                                </>
+                            ) : (
+                                <>
+                                    <PlayIcon className="w-5 h-5"/>
+                                    <span>Выполнить Раскрой</span>
+                                </>
+                            )}
                         </button>
                         
-                        <button onClick={onClearNest} className="w-full flex items-center justify-center space-x-2 bg-red-900/50 hover:bg-red-800 p-2 rounded-md text-red-200 border border-red-800">
+                        <button onClick={onClearNest} disabled={isNestingProcessing} className="w-full flex items-center justify-center space-x-2 bg-red-900/50 hover:bg-red-800 p-2 rounded-md text-red-200 border border-red-800 disabled:opacity-50">
                             <TrashIcon className="w-4 h-4"/>
                             <span>Сбросить результаты</span>
                         </button>

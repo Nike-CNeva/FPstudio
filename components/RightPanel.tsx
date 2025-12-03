@@ -1,8 +1,9 @@
 
 import React, { useState } from 'react';
-import { Tool, ToolShape, NestLayout, Part } from '../types';
+import { Tool, ToolShape, NestLayout, Part, PunchOp } from '../types';
 import { FilterButton } from './common/Button';
 import { ToolPreview } from './common/ToolDisplay';
+import { PlayIcon } from './Icons';
 
 interface RightPanelProps {
     tools: Tool[];
@@ -16,11 +17,23 @@ interface RightPanelProps {
     activeSheetIndex?: number;
     setActiveSheetIndex?: (idx: number) => void;
     allParts?: Part[];
+
+    // Simulation Controls
+    simulationStep?: number;
+    totalSimulationSteps?: number;
+    isSimulating?: boolean;
+    simulationSpeed?: number;
+    onToggleSimulation?: () => void;
+    onStopSimulation?: () => void;
+    onStepChange?: (val: number) => void;
+    onSpeedChange?: (val: number) => void;
+    optimizedOperations?: PunchOp[] | null;
 }
 
 export const RightPanel: React.FC<RightPanelProps> = ({ 
     tools, selectedToolId, setSelectedToolId, onOpenTurretView,
-    isNestingMode, activeNest, activeSheetIndex, setActiveSheetIndex, allParts 
+    isNestingMode, activeNest, activeSheetIndex, setActiveSheetIndex, allParts,
+    simulationStep = 0, totalSimulationSteps = 0, isSimulating, onToggleSimulation, onStopSimulation, onStepChange, onSpeedChange, optimizedOperations, simulationSpeed
 }) => {
     const [toolFilter, setToolFilter] = useState<'all' | ToolShape>('all');
 
@@ -28,7 +41,7 @@ export const RightPanel: React.FC<RightPanelProps> = ({
     if (isNestingMode && activeNest) {
         const currentSheet = (typeof activeSheetIndex === 'number' && activeNest.sheets[activeSheetIndex]) || null;
         
-        // Collect unique parts on this sheet
+        // Collect unique parts
         const uniquePartsOnSheet = new Map<string, number>();
         if (currentSheet) {
             currentSheet.placedParts.forEach(pp => {
@@ -37,38 +50,88 @@ export const RightPanel: React.FC<RightPanelProps> = ({
             });
         }
 
-        // Global Statistics Calculation
         const totalSheets = activeNest.sheets.reduce((acc, s) => acc + s.quantity, 0);
         const totalMaps = activeNest.sheets.length;
         
-        // Weighted Average Scrap
         let totalScrapWeighted = 0;
         let totalAreaWeighted = 0;
-        
-        activeNest.sheets.forEach(s => {
-            totalScrapWeighted += s.scrapPercentage * s.quantity;
-            totalAreaWeighted += s.quantity; // Just weighting by count for average %
-        });
+        activeNest.sheets.forEach(s => { totalScrapWeighted += s.scrapPercentage * s.quantity; totalAreaWeighted += s.quantity; });
         const globalScrap = totalAreaWeighted > 0 ? (totalScrapWeighted / totalAreaWeighted).toFixed(1) : "0.0";
 
+        // Current Operation Info
+        const currentOp = optimizedOperations ? optimizedOperations[simulationStep] : null;
+        const currentOpTool = currentOp ? tools.find(t => t.id === currentOp.toolId) : null;
+
         return (
-            <aside className="w-72 bg-gray-700 border-l border-gray-600 flex flex-col h-full">
+            <aside className="w-80 bg-gray-700 border-l border-gray-600 flex flex-col h-full">
                 <div className="p-4 border-b border-gray-600 bg-gray-800">
                     <h2 className="text-lg font-semibold text-gray-100">Результаты Раскроя</h2>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-6">
                     
-                    {/* Global Statistics */}
+                    {/* Simulation Controls (Only if optimized) */}
+                    {optimizedOperations && totalSimulationSteps > 0 && (
+                        <div className="bg-gray-800 p-3 rounded-md border border-gray-500 shadow-md">
+                            <h4 className="text-xs font-bold text-cyan-400 uppercase mb-2 flex items-center">
+                                <PlayIcon className="w-3 h-3 mr-1"/> Симуляция Пробивки
+                            </h4>
+                            
+                            <div className="flex items-center space-x-2 mb-2">
+                                <button onClick={onToggleSimulation} className={`flex-1 py-1 rounded text-xs font-bold ${isSimulating ? 'bg-yellow-600 text-white' : 'bg-green-600 text-white'}`}>
+                                    {isSimulating ? 'Пауза' : 'Старт'}
+                                </button>
+                                <button onClick={onStopSimulation} className="px-3 py-1 rounded text-xs bg-red-800 text-white font-bold">Стоп</button>
+                            </div>
+
+                            <div className="space-y-1 mb-2">
+                                <input 
+                                    type="range" 
+                                    min="0" max={totalSimulationSteps - 1} 
+                                    value={simulationStep} 
+                                    onChange={(e) => onStepChange && onStepChange(parseInt(e.target.value))}
+                                    className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                                />
+                                <div className="flex justify-between text-[10px] text-gray-400">
+                                    <span>0</span>
+                                    <span>{simulationStep} / {totalSimulationSteps}</span>
+                                </div>
+                            </div>
+
+                            {currentOp && (
+                                <div className="text-xs bg-gray-900 p-2 rounded border border-gray-700">
+                                    <div className="flex justify-between mb-1">
+                                        <span className="text-gray-500">Инструмент:</span>
+                                        <span className="text-white font-bold">{currentOpTool?.name || currentOp.toolId}</span>
+                                    </div>
+                                    <div className="flex justify-between mb-1">
+                                        <span className="text-gray-500">Позиция:</span>
+                                        <span className="font-mono text-cyan-300">X{currentOp.x.toFixed(1)} Y{currentOp.y.toFixed(1)}</span>
+                                    </div>
+                                    {currentOp.isToolChange && <div className="text-yellow-400 font-bold mt-1 text-center border-t border-gray-700 pt-1">СМЕНА ИНСТРУМЕНТА</div>}
+                                </div>
+                            )}
+                            
+                            <div className="mt-2">
+                                <label className="text-[10px] text-gray-400 block mb-1">Скорость (мс/шаг): {simulationSpeed}</label>
+                                <input 
+                                    type="range" min="10" max="500" step="10"
+                                    value={simulationSpeed}
+                                    onChange={e => onSpeedChange && onSpeedChange(parseInt(e.target.value))}
+                                    className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                                />
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Global Stats */}
                     <div>
                         <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Общая Статистика</h4>
                         <div className="bg-gray-800 p-3 rounded-md border border-gray-600 grid grid-cols-2 gap-2 text-xs">
                              <span className="text-gray-400">Всего листов:</span>
                              <span className="text-right text-white font-mono font-bold">{totalSheets}</span>
-                             
                              <span className="text-gray-400">Типов карт:</span>
                              <span className="text-right text-white font-mono">{totalMaps}</span>
-                             
                              <span className="text-gray-400">Ср. отход:</span>
                              <span className={`text-right font-mono font-bold ${parseFloat(globalScrap) < 20 ? 'text-green-400' : 'text-yellow-400'}`}>{globalScrap}%</span>
                         </div>
@@ -130,18 +193,12 @@ export const RightPanel: React.FC<RightPanelProps> = ({
                              </div>
                         </div>
                     )}
-
                 </div>
             </aside>
         );
     }
 
-    // --- STANDARD TOOL LIBRARY RENDER ---
-
-    const filteredTools = tools.filter(tool => {
-        if (toolFilter === 'all') return true;
-        return tool.shape === toolFilter;
-    });
+    const filteredTools = tools.filter(tool => toolFilter === 'all' || tool.shape === toolFilter);
 
     return (
         <aside className="w-64 bg-gray-700 border-l border-gray-600 flex flex-col h-full">

@@ -128,7 +128,8 @@ export const generatePdfReport = async (
     tools: Tool[],
     ncFilename: string,
     clamps: number[],
-    scheduledParts: ScheduledPart[]
+    scheduledParts: ScheduledPart[],
+    allSheets: NestResultSheet[] = []
 ) => {
     const doc = new jsPDF();
     
@@ -345,7 +346,7 @@ export const generatePdfReport = async (
     // 6. Render Parts Table
     doc.setFontSize(10);
     doc.setFont("Roboto", "bold");
-    doc.text("Список Деталей", margin, currentY - 1);
+    doc.text("Список Деталей (Кратко)", margin, currentY - 1);
     
     runAutoTable({
         startY: currentY,
@@ -378,33 +379,101 @@ export const generatePdfReport = async (
         }
     });
 
-    // 8. Fixed Footer (Always at bottom)
-    const footerY = pageHeight - 30;
+    // 8. Fixed Footer (Always at bottom of Page 1)
+    const renderFooter = (d: jsPDF) => {
+        const footerY = pageHeight - 30;
+        d.setDrawColor(0);
+        d.setLineWidth(0.5);
+        d.setFontSize(9);
+        d.setFont("Roboto", "bold");
+
+        // Box 1
+        d.rect(margin, footerY, 50, 12);
+        d.text("ВЫПОЛНЕНО", margin + 2, footerY + 8);
+        d.rect(margin + 40, footerY + 3, 6, 6);
+
+        // Box 2
+        d.rect(margin + 55, footerY, 50, 12);
+        d.text("НЕ ВЫПОЛНЕНО", margin + 57, footerY + 8);
+        d.rect(margin + 95, footerY + 3, 6, 6);
+
+        // Box 3
+        d.rect(margin + 110, footerY, 60, 12);
+        d.text("ОШИБКА ПРОГР.", margin + 112, footerY + 8);
+        d.rect(margin + 160, footerY + 3, 6, 6);
+
+        // Signatures Line
+        d.setFont("Roboto", "normal");
+        d.text("Оператор: __________________", margin, footerY + 25);
+        d.text("Дата изг.: __________________", pageWidth - margin - 60, footerY + 25);
+    };
+
+    renderFooter(doc);
+
+    // --- PAGE 2: DETAILED PRODUCTION INFO ---
+    doc.addPage();
     
-    doc.setDrawColor(0);
-    doc.setLineWidth(0.5);
-    doc.setFontSize(9);
+    // Header for Page 2
     doc.setFont("Roboto", "bold");
+    doc.setFontSize(14);
+    doc.text("ДЕТАЛИЗАЦИЯ ПРОИЗВОДСТВА (PRODUCTION DETAILS)", margin, 15);
+    
+    // Prepare Data for Detailed Table
+    const detailedBody = Array.from(partsOnSheet.keys()).map(partId => {
+        const part = parts.find(p => p.id === partId);
+        const scheduled = scheduledParts.find(sp => sp.partId === partId);
+        
+        const totalRequired = scheduled ? scheduled.quantity : 0;
+        const qtyOnThisLayout = partsOnSheet.get(partId) || 0;
+        const sheetMultiplier = sheet.quantity; // How many sheets of this type
+        const producedThisRun = qtyOnThisLayout * sheetMultiplier;
+        
+        // Find other sheets containing this part
+        const otherLocations: string[] = [];
+        allSheets.forEach((s, idx) => {
+            // Skip current sheet instance (by ID check if available, or just logic)
+            // But usually we want to see ALL locations.
+            // Let's filter to show "Other" sheets or list all distribution.
+            // The prompt asks "on which *other* sheets".
+            if (s.id === sheet.id) return; // Skip self
 
-    // Box 1
-    doc.rect(margin, footerY, 50, 12);
-    doc.text("ВЫПОЛНЕНО", margin + 2, footerY + 8);
-    doc.rect(margin + 40, footerY + 3, 6, 6);
+            const countOnOther = s.placedParts.filter(pp => pp.partId === partId).length;
+            if (countOnOther > 0) {
+                // Sheet name usually "Sheet 1", "Sheet 2".
+                // If sheets are generic, use index.
+                const sName = s.sheetName || `Sheet ${idx + 1}`;
+                otherLocations.push(`${sName} (x${s.quantity}): ${countOnOther * s.quantity} шт.`);
+            }
+        });
 
-    // Box 2
-    doc.rect(margin + 55, footerY, 50, 12);
-    doc.text("НЕ ВЫПОЛНЕНО", margin + 57, footerY + 8);
-    doc.rect(margin + 95, footerY + 3, 6, 6);
+        const otherSheetsStr = otherLocations.length > 0 ? otherLocations.join('\n') : "Нет (Только этот лист)";
 
-    // Box 3
-    doc.rect(margin + 110, footerY, 60, 12);
-    doc.text("ОШИБКА ПРОГР.", margin + 112, footerY + 8);
-    doc.rect(margin + 160, footerY + 3, 6, 6);
+        return [
+            part?.name || 'Unknown',
+            totalRequired,
+            `${qtyOnThisLayout} шт.`,
+            `x ${sheetMultiplier}`,
+            `${producedThisRun} шт.`,
+            otherSheetsStr
+        ];
+    });
 
-    // Signatures Line
-    doc.setFont("Roboto", "normal");
-    doc.text("Оператор: __________________", margin, footerY + 25);
-    doc.text("Дата изг.: __________________", pageWidth - margin - 60, footerY + 25);
+    runAutoTable({
+        startY: 20,
+        head: [['Наименование', 'Всего нужно', 'На листе', 'Кратность', 'Итого с листа', 'Другие листы (Распределение)']],
+        body: detailedBody,
+        ...tableStyles,
+        headStyles: { ...tableStyles.headStyles, fillColor: [75, 85, 99] }, // Gray-600
+        columnStyles: { 
+            1: { halign: 'center', width: 20 }, 
+            2: { halign: 'center', width: 20 },
+            3: { halign: 'center', width: 20 },
+            4: { halign: 'center', fontStyle: 'bold', width: 25 }
+        }
+    });
+
+    // Optional Footer on Page 2
+    renderFooter(doc);
     
     // Save - sanitize filename for download to prevent filesystem errors
     const safeFilename = ncFilename.replace(/[\/\\]/g, '_');
