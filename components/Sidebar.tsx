@@ -1,17 +1,9 @@
 
-import React, { ChangeEvent, useRef } from 'react';
-import { AppMode, NestLayout, Part, Tool, ManualPunchMode, PlacementReference, SnapMode, NibbleSettings, DestructSettings, PlacedTool, PlacementSide, TeachCycle, ScheduledPart } from '../../types';
-import { FolderIcon, SaveIcon, PlusIcon, TrashIcon, PlayIcon, SettingsIcon, CodeIcon } from './Icons';
-import { SidebarTabButton, ActionButton } from './common/Button';
-import { 
-    PartPropertiesForm, 
-    PlacedPunchesPanel, 
-    ManualPunchModeSelector, 
-    NibbleSettingsPanel, 
-    DestructSettingsPanel, 
-    PlacementSettings 
-} from './sidebar/SidebarPanels';
+import React, { ChangeEvent } from 'react';
+import { AppMode, NestLayout, Part, Tool, ManualPunchMode, SnapMode, NibbleSettings, DestructSettings, PlacedTool, TeachCycle, ScheduledPart } from '../../types';
+import { PartEditorSidebar } from './sidebar/PartEditorSidebar';
 import { NestingSidebarPanel } from './sidebar/NestingSidebarPanel';
+import { TrashIcon, PlayIcon } from './Icons';
 
 interface SidebarProps {
     mode: AppMode;
@@ -34,16 +26,13 @@ interface SidebarProps {
     setSelectedPunchId: (id: string | null) => void;
     onDeletePunch: (id: string | string[]) => void;
     onUpdatePunch: (id: string, updates: Partial<PlacedTool>) => void;
-    placementReference: PlacementReference;
-    setPlacementReference: (ref: PlacementReference) => void;
-    placementSide: PlacementSide;
-    setPlacementSide: (side: PlacementSide) => void;
+    onClearAllPunches: () => void;
     punchOrientation: number;
     setPunchOrientation: (angle: number) => void;
     onCyclePunchOrientation: () => void;
     snapMode: SnapMode;
     setSnapMode: (mode: SnapMode) => void;
-    punchOffset: number;
+    punchOffset: number; 
     setPunchOffset: (offset: number) => void;
     
     // Nesting Settings Prop
@@ -68,165 +57,56 @@ interface SidebarProps {
     onDeleteTeachCycle: (id: string) => void;
     // Nesting Actions
     onRunNesting?: () => void;
-    isNestingProcessing?: boolean; // New prop
+    isNestingProcessing?: boolean; 
     onClearNest?: () => void;
     selectedNestPartId?: string | null;
     onMoveNestPart?: (id: string, dx: number, dy: number) => void;
     onRotateNestPart?: (id: string) => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({
-    mode, activePart, onFileUpload, tools, activeNest, activeSheetIndex, setActiveSheetIndex, parts,
-    manualPunchMode, setManualPunchMode, selectedToolId,
-    selectedPunchId, setSelectedPunchId, onDeletePunch, onUpdatePunch, 
-    placementReference, setPlacementReference, placementSide, setPlacementSide, punchOrientation, setPunchOrientation, onCyclePunchOrientation,
-    snapMode, setSnapMode, punchOffset, setPunchOffset, 
-    onUpdateNestingSettings, onUpdateNestMetadata,
-    nibbleSettings, setNibbleSettings, destructSettings, setDestructSettings,
-    onSavePartAsScript, onSavePartAsStatic, onUpdateActivePart, onClosePart,
-    teachMode, setTeachMode, onSaveTeachCycle, teachCycles, onDeleteTeachCycle,
-    onRunNesting, isNestingProcessing, onClearNest, selectedNestPartId, onMoveNestPart, onRotateNestPart
-}) => {
-    const [sidebarTab, setSidebarTab] = React.useState<'properties' | 'punching' | 'teach'>('properties');
-    const fileInputRef = useRef<HTMLInputElement>(null);
+export const Sidebar: React.FC<SidebarProps> = (props) => {
+    const { 
+        mode, activePart, tools, activeNest, parts,
+        onRunNesting, isNestingProcessing, onClearNest, selectedNestPartId, onMoveNestPart, onRotateNestPart,
+        onUpdateNestingSettings, onUpdateNestMetadata
+    } = props;
 
     return (
         <aside className="w-80 bg-gray-700 p-4 flex flex-col space-y-4 overflow-y-auto border-r border-gray-600">
             {mode === AppMode.PartEditor && (
-                <div>
-                    <div className="flex border-b border-gray-600 mb-4">
-                        <SidebarTabButton label="Свойства" active={sidebarTab==='properties'} onClick={() => setSidebarTab('properties')} />
-                        <SidebarTabButton label="Пробивка" active={sidebarTab==='punching'} onClick={() => setSidebarTab('punching')} />
-                        <SidebarTabButton label="Обучение" active={sidebarTab==='teach'} onClick={() => setSidebarTab('teach')} />
-                    </div>
-
-                    {sidebarTab === 'properties' && (
-                        <div className="space-y-4">
-                            {!activePart ? (
-                                <div className="text-center py-8 space-y-4">
-                                    <p className="text-gray-400 text-sm">Нет активной детали.<br/>Загрузите файл для начала работы.</p>
-                                    <button onClick={() => fileInputRef.current?.click()} className="w-full flex items-center justify-center space-x-2 bg-blue-600 hover:bg-blue-700 p-3 rounded-md shadow-lg">
-                                        <FolderIcon className="w-6 h-6"/>
-                                        <span className="font-bold">Открыть файл (DXF / CP)</span>
-                                    </button>
-                                    <input type="file" ref={fileInputRef} onChange={onFileUpload} accept=".dxf,.cp" className="hidden" />
-                                </div>
-                            ) : (
-                                <>
-                                    <PartPropertiesForm part={activePart} onUpdate={onUpdateActivePart} onClosePart={onClosePart} />
-                                    
-                                    <div className="pt-4 border-t border-gray-600 grid grid-cols-2 gap-2">
-                                        <button onClick={onSavePartAsStatic} className="flex flex-col items-center justify-center p-2 bg-blue-600 hover:bg-blue-700 rounded-md shadow-lg text-white transition-colors">
-                                            <SaveIcon className="w-5 h-5 mb-1"/>
-                                            <span className="font-bold text-xs">Сохранить Деталь</span>
-                                        </button>
-                                        <button onClick={onSavePartAsScript} className="flex flex-col items-center justify-center p-2 bg-purple-600 hover:bg-purple-700 rounded-md shadow-lg text-white transition-colors">
-                                            <CodeIcon className="w-5 h-5 mb-1"/>
-                                            <span className="font-bold text-xs">Сохранить Скрипт</span>
-                                        </button>
-                                    </div>
-                                    <p className="text-[10px] text-gray-400 text-center mt-2">
-                                        "Деталь" - для текущего раскроя. "Скрипт" - в библиотеку.
-                                    </p>
-                                </>
-                            )}
-                        </div>
-                    )}
-
-                    {sidebarTab === 'punching' && (
-                        <div>
-                            {!activePart ? (
-                                <p className="text-center text-gray-500 py-4 text-sm">Загрузите деталь для работы с инструментом.</p>
-                            ) : (
-                                <>
-                                    <PlacedPunchesPanel 
-                                        activePart={activePart}
-                                        tools={tools}
-                                        selectedPunchId={selectedPunchId}
-                                        onSelectPunch={setSelectedPunchId}
-                                        onDeletePunch={onDeletePunch}
-                                        onUpdatePunch={onUpdatePunch}
-                                    />
-                                    <ManualPunchModeSelector manualPunchMode={manualPunchMode} setManualPunchMode={setManualPunchMode} />
-                                    {manualPunchMode === ManualPunchMode.Nibble && <NibbleSettingsPanel nibbleSettings={nibbleSettings} setNibbleSettings={setNibbleSettings} />}
-                                    {manualPunchMode === ManualPunchMode.Destruct && <DestructSettingsPanel destructSettings={destructSettings} setDestructSettings={setDestructSettings} />}
-                                    <PlacementSettings 
-                                        placementReference={placementReference}
-                                        setPlacementReference={setPlacementReference}
-                                        placementSide={placementSide}
-                                        setPlacementSide={setPlacementSide}
-                                        punchOrientation={punchOrientation}
-                                        setPunchOrientation={setPunchOrientation}
-                                        onCyclePunchOrientation={onCyclePunchOrientation}
-                                        selectedToolId={selectedToolId}
-                                        tools={tools}
-                                        punchOffset={punchOffset}
-                                        setPunchOffset={setPunchOffset}
-                                        manualPunchMode={manualPunchMode}
-                                        snapMode={snapMode}
-                                        setSnapMode={setSnapMode}
-                                    />
-                                </>
-                            )}
-                        </div>
-                    )}
-
-                    {sidebarTab === 'teach' && (
-                        <div>
-                            {!activePart ? (
-                                <p className="text-center text-gray-500 py-4 text-sm">Загрузите деталь для создания циклов.</p>
-                            ) : (
-                                <div className="space-y-4">
-                                    <div className="bg-gray-800 p-3 rounded-md">
-                                        <h3 className="font-bold text-gray-300 mb-2">Обучающие циклы</h3>
-                                        <p className="text-xs text-gray-400 mb-3">
-                                            Создавайте шаблоны обработки для автоматического повторения на похожей геометрии.
-                                        </p>
-                                        
-                                        {!teachMode ? (
-                                            <button 
-                                                onClick={() => setTeachMode(true)} 
-                                                className="w-full bg-purple-600 hover:bg-purple-500 text-white py-2 rounded flex items-center justify-center space-x-2"
-                                            >
-                                                <PlusIcon className="w-5 h-5"/>
-                                                <span>Создать цикл</span>
-                                            </button>
-                                        ) : (
-                                            <div className="space-y-2 border border-purple-500 p-2 rounded bg-purple-900/20">
-                                                <p className="text-xs text-purple-300 font-semibold text-center">РЕЖИМ ЗАПИСИ</p>
-                                                <p className="text-[10px] text-gray-300 text-center">
-                                                    Выберите линии контура и установленные инструменты на чертеже.
-                                                </p>
-                                                <div className="flex space-x-2">
-                                                    <button onClick={() => setTeachMode(false)} className="flex-1 bg-gray-600 hover:bg-gray-500 py-1 rounded text-sm">Отмена</button>
-                                                    <button onClick={onSaveTeachCycle} className="flex-1 bg-green-600 hover:bg-green-500 py-1 rounded text-sm font-bold">Сохранить</button>
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-
-                                    <div className="space-y-2">
-                                        <h4 className="text-xs font-bold text-gray-400 uppercase">Список циклов</h4>
-                                        <div className="max-h-60 overflow-y-auto space-y-1">
-                                            {teachCycles.map(cycle => (
-                                                <div key={cycle.id} className="bg-gray-800 p-2 rounded flex justify-between items-center group">
-                                                    <div>
-                                                        <div className="text-sm font-semibold">{cycle.name}</div>
-                                                        <div className="text-[10px] text-gray-500">Sym: {cycle.symmetry}</div>
-                                                    </div>
-                                                    <button onClick={() => onDeleteTeachCycle(cycle.id)} className="text-gray-500 hover:text-red-500">
-                                                        <TrashIcon className="w-4 h-4"/>
-                                                    </button>
-                                                </div>
-                                            ))}
-                                            {teachCycles.length === 0 && <p className="text-center text-xs text-gray-500 py-2">Нет сохраненных циклов</p>}
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-                    )}
-                </div>
+                <PartEditorSidebar 
+                    activePart={activePart}
+                    parts={parts}
+                    tools={tools}
+                    onFileUpload={props.onFileUpload}
+                    manualPunchMode={props.manualPunchMode}
+                    setManualPunchMode={props.setManualPunchMode}
+                    selectedToolId={props.selectedToolId}
+                    setSelectedToolId={props.setSelectedToolId}
+                    selectedPunchId={props.selectedPunchId}
+                    setSelectedPunchId={props.setSelectedPunchId}
+                    onDeletePunch={props.onDeletePunch}
+                    onUpdatePunch={props.onUpdatePunch}
+                    onClearAllPunches={props.onClearAllPunches}
+                    punchOrientation={props.punchOrientation}
+                    setPunchOrientation={props.setPunchOrientation}
+                    onCyclePunchOrientation={props.onCyclePunchOrientation}
+                    snapMode={props.snapMode}
+                    setSnapMode={props.setSnapMode}
+                    nibbleSettings={props.nibbleSettings}
+                    setNibbleSettings={props.setNibbleSettings}
+                    destructSettings={props.destructSettings}
+                    setDestructSettings={props.setDestructSettings}
+                    onSavePartAsScript={props.onSavePartAsScript}
+                    onSavePartAsStatic={props.onSavePartAsStatic}
+                    onUpdateActivePart={props.onUpdateActivePart}
+                    onClosePart={props.onClosePart}
+                    teachMode={props.teachMode}
+                    setTeachMode={props.setTeachMode}
+                    onSaveTeachCycle={props.onSaveTeachCycle}
+                    teachCycles={props.teachCycles}
+                    onDeleteTeachCycle={props.onDeleteTeachCycle}
+                />
             )}
 
              {mode === AppMode.Nesting && activeNest && (

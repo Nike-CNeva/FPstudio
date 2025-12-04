@@ -1,23 +1,25 @@
 
-import { PartGeometry, PlacedTool, Tool, Point, NibbleSettings, DestructSettings, AutoPunchSettings, TurretLayout, ToolShape, DxfEntity, TeachCycle } from '../types';
+import { PartGeometry, PlacedTool, Tool, Point, NibbleSettings, DestructSettings, AutoPunchSettings, TurretLayout, ToolShape, DxfEntity, TeachCycle, Part } from '../types';
 import { generateId } from '../utils/helpers';
-import { isPointInsideContour, ProcessedGeometry } from './geometry';
+import { isPointInsideContour, ProcessedGeometry, getGeometryFromEntities } from './geometry';
 import { findTeachCycleMatches } from './teachLogic';
 
 const degreesToRadians = (degrees: number) => degrees * (Math.PI / 180);
 
 // Helper: Normalize point from DXF coordinates to Canvas coordinates (SVG Y-Down)
+// FIX: Removed Y-inversion. Now maps strictly by offset.
 const normalizePoint = (p: Point, height: number, bbox: { minX: number, minY: number }) => ({
     x: p.x - bbox.minX,
-    y: height - (p.y - bbox.minY)
+    y: p.y - bbox.minY
 });
 
 /**
  * Denormalize point from SVG coordinates back to Raw DXF coordinates for geometric checks.
+ * FIX: Removed Y-inversion. Now maps strictly by offset.
  */
 const denormalizePoint = (p: Point, height: number, bbox: { minX: number, minY: number }) => ({
     x: p.x + bbox.minX,
-    y: bbox.minY + (height - p.y)
+    y: p.y + bbox.minY
 });
 
 /**
@@ -153,7 +155,7 @@ export const generateNibblePunches = (
     angle: number,
     wasNormalized: boolean,
     punchOrientation: number,
-    punchOffset: number
+    punchOffset: number // Perpendicular offset from the line
 ): Omit<PlacedTool, 'id'>[] => {
     const punches: Omit<PlacedTool, 'id'>[] = [];
     const lineGroupId = `manual_nibble_${generateId()}`;
@@ -167,12 +169,17 @@ export const generateNibblePunches = (
     const ux = dx / length;
     const uy = dy / length;
     
+    // Normal vector to the line
+    const nx = -uy;
+    const ny = ux;
+
     // Manual nibble always uses explicit extension settings
     const extensionStart = settings.extensionStart;
     const extensionEnd = settings.extensionEnd;
     
     const effectiveLength = length + extensionStart + extensionEnd;
 
+    // Determine tool dimensions in the rotated frame
     const toolRad = degreesToRadians(punchOrientation);
     const lineRad = degreesToRadians(angle);
     const relativeAngle = Math.abs(lineRad - toolRad);
@@ -186,17 +193,15 @@ export const generateNibblePunches = (
     
     const step = Math.max(0.1, toolLength - settings.minOverlap);
     
-    const offsetRad = lineRad + Math.PI / 2;
-    const ox = Math.cos(offsetRad) * punchOffset;
-    const oy = Math.sin(offsetRad) * punchOffset;
-    
+    // Calculate start center position with extension and offset
     const halfProj = toolLength / 2;
     // Adjust start for extension
     const startX = p1.x - ux * extensionStart;
     const startY = p1.y - uy * extensionStart;
 
-    const firstCenterX = startX + ux * halfProj + ox;
-    const firstCenterY = startY + uy * halfProj + oy;
+    // Apply offset perpendicular to the line direction
+    const firstCenterX = startX + ux * halfProj + nx * punchOffset;
+    const firstCenterY = startY + uy * halfProj + ny * punchOffset;
     
     const travelLength = Math.max(0, effectiveLength - toolLength);
     const actualHits = travelLength > 0 ? Math.ceil(travelLength / step) + 1 : 1;
@@ -269,669 +274,138 @@ export const generateDestructPunches = (
     return punches;
 };
 
-// --- Auto Punching Internal Types ---
-
-interface ProcessSegment {
-    type: 'LINE' | 'ARC' | 'CIRCLE';
-    p1: Point;
-    p2: Point; // For Circle, p1=p2=center, or arbitrary start/end
-    originalEntity: any;
-    radius?: number; // Helper for matching
-    center?: Point;  // Helper for matching
-}
-
-// Helper to check neighbor coverage
-const getProjectedCoverage = (
-    vertex: Point,
-    lineVector: Point, // Normalized vector pointing INTO the line
-    neighborPunches: Omit<PlacedTool, 'id'>[],
-    allTools: Tool[]
-): number => {
-    let maxCover = 0;
-
-    for (const punch of neighborPunches) {
-        const tool = allTools.find(t => t.id === punch.toolId);
-        if (!tool) continue;
-
-        const dx = punch.x - vertex.x;
-        const dy = punch.y - vertex.y;
-        const projection = dx * lineVector.x + dy * lineVector.y;
-        
-        const toolHalfSize = Math.max(tool.width, tool.height) / 2;
-        const coverage = projection + toolHalfSize;
-        
-        if (coverage > maxCover) maxCover = coverage;
-    }
-    return maxCover;
-};
-
-/**
- * Generates punches for contouring.
- */
 export const generateContourPunches = (
-    partGeometry: PartGeometry, 
-    allTools: Tool[], 
+    geometry: PartGeometry,
+    tools: Tool[],
     settings: AutoPunchSettings,
-    turretLayouts: TurretLayout[] | undefined,
-    teachCycles: TeachCycle[] = []
+    turretLayouts: TurretLayout[],
+    teachCycles: TeachCycle[]
 ): Omit<PlacedTool, 'id'>[] => {
-    const { 
-        toolSourceType,
-        turretLayoutId,
-        overlap, 
-        extension,
-        scallopHeight, 
-        vertexTolerance,
-        microJointsEnabled, 
-        microJointLength, 
-        microJointType,
-        useTeachCycles
-    } = settings;
+    // 1. Process Geometry
+    const processed = getGeometryFromEntities({ geometry } as Part); 
+    if (!processed) return [];
 
     const punches: Omit<PlacedTool, 'id'>[] = [];
+    const coveredIndices = new Set<number>();
 
-    // 1. Filter Tools
-    let availableTools: Tool[] = [];
-    if (toolSourceType === 'turret' && turretLayoutId && turretLayouts) {
-        const layout = turretLayouts.find(l => l.id === turretLayoutId);
+    // 2. Teach Cycles
+    if (settings.useTeachCycles && teachCycles && teachCycles.length > 0) {
+        const matches = findTeachCycleMatches(processed, teachCycles);
+        matches.matches.forEach(p => punches.push(p));
+        matches.coveredSegmentIndices.forEach(i => coveredIndices.add(i));
+    }
+
+    // 3. Filter Tools
+    let availableTools = tools;
+    if (settings.toolSourceType === 'turret' && settings.turretLayoutId) {
+        const layout = turretLayouts.find(l => l.id === settings.turretLayoutId);
         if (layout) {
-            availableTools = layout.toolsSnapshot.filter(t => t.stationNumber && t.stationNumber > 0);
+            availableTools = layout.toolsSnapshot.filter(t => !!t.stationNumber);
         }
-    } else {
-        availableTools = allTools;
-    }
-    if (!availableTools || availableTools.length === 0) {
-        return [];
     }
 
-    const { height, bbox, entities } = partGeometry;
+    // 4. Iterate Segments
+    processed.segments.forEach((seg, idx) => {
+        if (coveredIndices.has(idx)) return;
 
-    // 2. Pre-process geometry into normalized segments
-    const segments: ProcessSegment[] = [];
+        if (seg.type === 'line') {
+            const candidates = getPreferredTools('line', 0, availableTools);
+            if (candidates.length === 0) return;
+            const tool = candidates[0];
 
-    entities.forEach(entity => {
-        if (entity.type === 'LINE') {
-            segments.push({
-                type: 'LINE',
-                p1: normalizePoint(entity.start, height, bbox),
-                p2: normalizePoint(entity.end, height, bbox),
-                originalEntity: entity
-            });
-        } else if (entity.type === 'LWPOLYLINE') {
-            const verts = entity.vertices.map(v => normalizePoint(v, height, bbox));
-            for (let i = 0; i < verts.length - 1; i++) {
-                segments.push({ type: 'LINE', p1: verts[i], p2: verts[i+1], originalEntity: entity });
-            }
-            if (entity.closed) {
-                segments.push({ type: 'LINE', p1: verts[verts.length-1], p2: verts[0], originalEntity: entity });
-            }
-        } else if (entity.type === 'ARC') {
-             const d2r = Math.PI / 180;
-             const startX = entity.center.x + entity.radius * Math.cos(entity.startAngle * d2r);
-             const startY = entity.center.y + entity.radius * Math.sin(entity.startAngle * d2r);
-             const endX = entity.center.x + entity.radius * Math.cos(entity.endAngle * d2r);
-             const endY = entity.center.y + entity.radius * Math.sin(entity.endAngle * d2r);
-             const center = normalizePoint(entity.center, height, bbox);
-
-             segments.push({
-                 type: 'ARC',
-                 p1: normalizePoint({x: startX, y: startY}, height, bbox),
-                 p2: normalizePoint({x: endX, y: endY}, height, bbox),
-                 radius: entity.radius,
-                 center: center,
-                 originalEntity: entity
-             });
-        } else if (entity.type === 'CIRCLE') {
-             const center = normalizePoint(entity.center, height, bbox);
-             segments.push({
-                 type: 'CIRCLE',
-                 p1: center,
-                 p2: center,
-                 radius: entity.radius,
-                 center: center,
-                 originalEntity: entity
-             });
-        }
-    });
-
-    // 3. Calculate Geometry Bounds
-    let geoMinX = Infinity, geoMaxX = -Infinity, geoMinY = Infinity, geoMaxY = -Infinity;
-    
-    if (segments.length > 0) {
-        segments.forEach(seg => {
-            const check = (p: Point) => {
-                if (p.x < geoMinX) geoMinX = p.x;
-                if (p.x > geoMaxX) geoMaxX = p.x;
-                if (p.y < geoMinY) geoMinY = p.y;
-                if (p.y > geoMaxY) geoMaxY = p.y;
-            };
-            check(seg.p1);
-            check(seg.p2);
-        });
-    } else {
-        return [];
-    }
-
-    // TRACKING STATE to avoid double punching
-    const processedSegmentIndices = new Set<number>();
-    const punchedHoleCenters = new Set<string>();
-    const segmentPunchesMap = new Map<number, Omit<PlacedTool, 'id'>[]>();
-
-    const recordPunch = (segIndex: number, newPunches: Omit<PlacedTool, 'id'>[]) => {
-        punches.push(...newPunches);
-        processedSegmentIndices.add(segIndex);
-        if (!segmentPunchesMap.has(segIndex)) {
-            segmentPunchesMap.set(segIndex, []);
-        }
-        segmentPunchesMap.get(segIndex)!.push(...newPunches);
-    };
-
-    // --- PHASE 0: TEACH CYCLES ---
-    if (useTeachCycles && teachCycles.length > 0) {
-        // Construct a temporary geometry object that matches the structure expected by findTeachCycleMatches
-        const tempGeo: any = { segments: segments }; 
-        const { matches, coveredSegmentIndices } = findTeachCycleMatches(tempGeo as ProcessedGeometry, teachCycles);
-        
-        // Add punches
-        punches.push(...matches);
-        
-        // Mark segments as processed
-        coveredSegmentIndices.forEach(idx => processedSegmentIndices.add(idx));
-    }
-
-    const TOL = 0.5; // Tolerance for checking if a segment is on the edge
-    const MATCH_TOL = 0.1; // Tolerance for coordinate matching
-
-    // 4. Identify Joint Vertices
-    const jointVertices = new Set<string>();
-    
-    if (microJointsEnabled) {
-        segments.forEach(seg => {
-            if (seg.type !== 'LINE') return; 
-
-            const onTop = Math.abs(seg.p1.y - geoMinY) < TOL && Math.abs(seg.p2.y - geoMinY) < TOL;
-            const onBottom = Math.abs(seg.p1.y - geoMaxY) < TOL && Math.abs(seg.p2.y - geoMaxY) < TOL;
-            const onLeft = Math.abs(seg.p1.x - geoMinX) < TOL && Math.abs(seg.p2.x - geoMinX) < TOL;
-            const onRight = Math.abs(seg.p1.x - geoMaxX) < TOL && Math.abs(seg.p2.x - geoMaxX) < TOL;
-
-            let shouldJoint = false;
-            if (microJointType === 'all') {
-                if (onTop || onBottom || onLeft || onRight) shouldJoint = true;
-            } else if (microJointType === 'horizontal') {
-                if (onTop || onBottom) shouldJoint = true;
-            } else if (microJointType === 'vertical') {
-                if (onLeft || onRight) shouldJoint = true;
-            }
-
-            if (shouldJoint) {
-                jointVertices.add(`${seg.p1.x.toFixed(3)},${seg.p1.y.toFixed(3)}`);
-                jointVertices.add(`${seg.p2.x.toFixed(3)},${seg.p2.y.toFixed(3)}`);
-            }
-        });
-    }
-
-    const distSq = (p1: Point, p2: Point) => (p1.x - p2.x)**2 + (p1.y - p2.y)**2;
-    const tolSq = MATCH_TOL * MATCH_TOL;
-
-    // 5. Generate Punches - PASS 1 (Standard)
-    for (let i = 0; i < segments.length; i++) {
-        if (processedSegmentIndices.has(i)) continue;
-
-        const seg = segments[i];
-        const lineGroupId = `auto_${generateId()}`;
-
-        // --- LINE HANDLING ---
-        if (seg.type === 'LINE') {
             const dx = seg.p2.x - seg.p1.x;
             const dy = seg.p2.y - seg.p1.y;
-            const length = Math.sqrt(dx*dx + dy*dy);
-            if (length <= 0.1) continue;
-
-            const ux = dx / length;
-            const uy = dy / length;
+            const len = Math.sqrt(dx*dx + dy*dy);
             const angle = Math.atan2(dy, dx) * 180 / Math.PI;
 
-            const p1Key = `${seg.p1.x.toFixed(3)},${seg.p1.y.toFixed(3)}`;
-            const p2Key = `${seg.p2.x.toFixed(3)},${seg.p2.y.toFixed(3)}`;
-            const startIsJoint = jointVertices.has(p1Key);
-            const endIsJoint = jointVertices.has(p2Key);
-
-            // Determine Required Extensions based on Topology
-            const probeDist = 0.5;
+            // Determine Offset for Outside
+            // Probe + and - normal
+            const perpOffset = (tool.shape === ToolShape.Circle ? tool.width : tool.height) / 2;
             
-            // Check Start (P1)
-            const probeP1 = { x: seg.p1.x - ux * probeDist, y: seg.p1.y - uy * probeDist };
-            const isP1Blocked = isPointInsideContour(denormalizePoint(probeP1, height, bbox), partGeometry);
+            // Normalized vector
+            const ux = dx/len; const uy = dy/len;
+            const nx = -uy; const ny = ux;
             
-            // Check End (P2)
-            const probeP2 = { x: seg.p2.x + ux * probeDist, y: seg.p2.y + uy * probeDist };
-            const isP2Blocked = isPointInsideContour(denormalizePoint(probeP2, height, bbox), partGeometry);
-
-            // Calculate Required Extensions
-            let reqExt1 = 0;
-            if (startIsJoint) reqExt1 = -microJointLength;
-            else if (isP1Blocked) reqExt1 = 0;
-            else reqExt1 = extension;
-
-            let reqExt2 = 0;
-            if (endIsJoint) reqExt2 = -microJointLength;
-            else if (isP2Blocked) reqExt2 = 0;
-            else reqExt2 = extension;
-
-            // Target Punch Dimensions
-            const targetLength = length + reqExt1 + reqExt2;
-
-            if (targetLength <= 0) continue;
-
-            // Offset calculation (Inside/Outside)
-            const nx = -uy;
-            const ny = ux;
+            const midX = (seg.p1.x + seg.p2.x)/2;
+            const midY = (seg.p1.y + seg.p2.y)/2;
             
-            const midX = (seg.p1.x + seg.p2.x) / 2;
-            const midY = (seg.p1.y + seg.p2.y) / 2;
+            const testP = { x: midX + nx * perpOffset * 1.1, y: midY + ny * perpOffset * 1.1 };
+            const rawTestP = denormalizePoint(testP, geometry.height, geometry.bbox);
             
-            const sideProbeP = { x: midX + nx * probeDist, y: midY + ny * probeDist };
-            const rawSideProbeP = denormalizePoint(sideProbeP, height, bbox);
+            // If Probe is Inside Material -> we want the OTHER side (-1)
+            // If Probe is Outside Material -> we want THIS side (+1)
+            const isInside = isPointInsideContour(rawTestP, geometry);
+            const sign = isInside ? -1 : 1;
             
-            const isMaterialSide = isPointInsideContour(rawSideProbeP, partGeometry);
-            const punchNx = isMaterialSide ? -nx : nx;
-            const punchNy = isMaterialSide ? -ny : ny;
+            const segmentPunches = generateNibblePunches(
+                seg.p1, 
+                seg.p2, 
+                tool, 
+                {
+                    extensionStart: settings.extension,
+                    extensionEnd: settings.extension,
+                    minOverlap: settings.overlap,
+                    hitPointMode: 'offset',
+                    toolPosition: 'long'
+                },
+                angle,
+                false,
+                angle, 
+                perpOffset * sign
+            );
+            punches.push(...segmentPunches);
 
-            const candidateTools = getPreferredTools('line', length, availableTools);
+        } else if (seg.type === 'arc') {
+            const candidates = getPreferredTools('circle', 0, availableTools);
+            if (candidates.length === 0) return;
+            const tool = candidates[0];
+            const r = seg.radius || 0;
+            const center = seg.center || {x:0,y:0};
             
-            for (const tool of candidateTools) {
-                let toolRotation = angle;
-                let toolWidthAlongLine = tool.width;
-                let toolHeightNormal = tool.height;
+            if (r <= 0) return;
 
-                // Adjust tool dimension if it fits better rotated 90deg
-                if (tool.width < tool.height) {
-                    toolRotation += 90;
-                    toolWidthAlongLine = tool.height;
-                    toolHeightNormal = tool.width;
-                }
+            // Arc Nibbling
+            const ang1 = Math.atan2(seg.p1.y - center.y, seg.p1.x - center.x);
+            let ang2 = Math.atan2(seg.p2.y - center.y, seg.p2.x - center.x);
+            
+            // Determine probe direction based on mid-point of chord/arc
+            let diff = ang2 - ang1;
+            // Normalize angular difference
+            if (diff < -Math.PI) diff += 2 * Math.PI;
+            if (diff > Math.PI) diff -= 2 * Math.PI;
+            
+            const midAng = ang1 + diff / 2;
+            
+            const probeR = r + 0.1; // Just outside R
+            const probeX = center.x + probeR * Math.cos(midAng);
+            const probeY = center.y + probeR * Math.sin(midAng);
+            
+            const rawProbe = denormalizePoint({x: probeX, y: probeY}, geometry.height, geometry.bbox);
+            const isProbeInMaterial = isPointInsideContour(rawProbe, geometry);
+            
+            // If "outside" (R+) is in material -> We must punch "inside" (R-) -> Hole
+            // If "outside" (R+) is NOT in material -> We punch "outside" (R+) -> Contour
+            const punchRadius = isProbeInMaterial ? (r - tool.width/2) : (r + tool.width/2);
+            
+            if (punchRadius <= 0) return; // Tool too big for hole
 
-                const offsetDist = toolHeightNormal / 2;
-                const offsetX = punchNx * offsetDist;
-                const offsetY = punchNy * offsetDist;
-
-                // --- CASE A: SINGLE HIT (Includes Slot Logic) ---
-                if (tool.shape === ToolShape.Oblong) {
-                     // Special Slot logic for Oblongs
-                     const major = Math.max(tool.width, tool.height);
-                     const minor = Math.min(tool.width, tool.height);
-                     const straightLen = major - minor;
-                     
-                     // Strict slot match
-                     if (Math.abs(length - straightLen) <= 0.5) { // Fixed small tolerance for slot identification
-                         const cx = midX + offsetX;
-                         const cy = midY + offsetY;
-                         if (!isToolIntruding(tool, cx, cy, toolRotation, partGeometry)) {
-                             recordPunch(i, [{ toolId: tool.id, x: cx, y: cy, rotation: toolRotation, lineId: lineGroupId }]);
-                             
-                             // Clean up connected arcs logic (omitted for brevity, assume standard slot handling)
-                             const radiusToFind = minor / 2;
-                             const matchTolSq = MATCH_TOL * MATCH_TOL;
-                             for (let j = 0; j < segments.length; j++) {
-                                 if (i === j || processedSegmentIndices.has(j)) continue;
-                                 const other = segments[j];
-                                 if (other.type !== 'ARC') continue;
-                                 if (Math.abs((other.radius || 0) - radiusToFind) > 0.5) continue;
-                                 const d1 = distSq(other.p1, seg.p1), d2 = distSq(other.p2, seg.p1);
-                                 const d3 = distSq(other.p1, seg.p2), d4 = distSq(other.p2, seg.p2);
-                                 if (d1 < matchTolSq || d2 < matchTolSq || d3 < matchTolSq || d4 < matchTolSq) processedSegmentIndices.add(j);
-                             }
-                             break;
-                         }
-                     }
-                     continue; 
-                }
-                
-                // --- SINGLE HIT LOGIC (RECT/SQUARE) ---
-                let allowableExtra1 = 0;
-                let allowableExtra2 = 0;
-                
-                // Only Open ends allow over-travel. Joints and Blocked corners are strict.
-                if (!startIsJoint && !isP1Blocked) allowableExtra1 = vertexTolerance;
-                if (!endIsJoint && !isP2Blocked) allowableExtra2 = vertexTolerance;
-                
-                const minReqLength = targetLength;
-                const maxAllowedLength = targetLength + allowableExtra1 + allowableExtra2;
-
-                // Allow tiny epsilon for float comparison errors on "falling short"
-                if (toolWidthAlongLine >= (minReqLength - 0.01) && toolWidthAlongLine <= maxAllowedLength) {
-                    const distToTargetCenter = (-reqExt1 + length + reqExt2) / 2;
-                    let finalDistFromP1 = distToTargetCenter;
-                    const toolHalf = toolWidthAlongLine / 2;
-                    
-                    // If Start is strict (allowableExtra1 == 0), we cannot go left of (-reqExt1)
-                    if (allowableExtra1 === 0) {
-                        const minCenter = -reqExt1 + toolHalf;
-                        if (finalDistFromP1 < minCenter) finalDistFromP1 = minCenter;
-                    }
-                    
-                    // If End is strict (allowableExtra2 == 0), we cannot go right of (Length + reqExt2)
-                    if (allowableExtra2 === 0) {
-                        const maxCenter = length + reqExt2 - toolHalf;
-                        if (finalDistFromP1 > maxCenter) finalDistFromP1 = maxCenter;
-                    }
-
-                    // Apply Final Position
-                    const cx = seg.p1.x + ux * finalDistFromP1 + offsetX;
-                    const cy = seg.p1.y + uy * finalDistFromP1 + offsetY;
-                    
-                    if (!isToolIntruding(tool, cx, cy, toolRotation, partGeometry)) {
-                        recordPunch(i, [{
-                            toolId: tool.id,
-                            x: cx,
-                            y: cy,
-                            rotation: toolRotation,
-                            lineId: lineGroupId
-                        }]);
-                        break;
-                    }
-                }
-
-                // --- NIBBLING ---
-                // Only if single hit failed
-                
-                // Nibbling start/end logic derived from required extensions
-                const nibbleStart = -reqExt1; 
-                const nibbleEnd = length + reqExt2;
-                
-                const toolHalfLen = toolWidthAlongLine / 2;
-                const firstCenterPos = nibbleStart + toolHalfLen;
-                const lastCenterPos = nibbleEnd - toolHalfLen;
-                const centerDistance = lastCenterPos - firstCenterPos;
-
-                if (centerDistance >= 0) {
-                    const step = Math.max(0.5, toolWidthAlongLine - overlap);
-                    const numHits = Math.ceil(centerDistance / step) + 1;
-                    const adjustedStep = numHits > 1 ? centerDistance / (numHits - 1) : 0;
-                    
-                    const baseX = seg.p1.x + offsetX;
-                    const baseY = seg.p1.y + offsetY;
-                    
-                    let validNibble = true;
-                    const tempPunches = [];
-
-                    for (let k = 0; k < numHits; k++) {
-                        const distFromStart = firstCenterPos + (k * adjustedStep);
-                        const px = baseX + ux * distFromStart;
-                        const py = baseY + uy * distFromStart;
-
-                        if (k === 0 || k === numHits - 1) {
-                            if (isToolIntruding(tool, px, py, toolRotation, partGeometry)) {
-                                validNibble = false;
-                                break;
-                            }
-                        }
-                        
-                        tempPunches.push({ toolId: tool.id, x: px, y: py, rotation: toolRotation, lineId: lineGroupId });
-                    }
-                    
-                    if (validNibble) {
-                        recordPunch(i, tempPunches);
-                        break; 
-                    }
-                }
+            const stepLen = calculateScallopStep(tool.width/2, settings.scallopHeight);
+            const angularStep = stepLen / punchRadius;
+            
+            const steps = Math.ceil(Math.abs(diff) / angularStep);
+            const realStep = diff / steps;
+            
+            for(let i=0; i<=steps; i++) {
+                const a = ang1 + i * realStep;
+                punches.push({
+                    toolId: tool.id,
+                    x: center.x + punchRadius * Math.cos(a),
+                    y: center.y + punchRadius * Math.sin(a),
+                    rotation: 0
+                });
             }
         }
-
-        // --- ARC HANDLING ---
-        else if (seg.type === 'ARC' || seg.type === 'CIRCLE') {
-            const entity = seg.originalEntity;
-            const center = normalizePoint(entity.center, height, bbox);
-            const r = entity.radius;
-            let startAngle = 0;
-            let endAngle = 360;
-            
-            if (seg.type === 'ARC') {
-                startAngle = entity.startAngle;
-                endAngle = entity.endAngle;
-                if (endAngle < startAngle) endAngle += 360;
-            }
-
-            const candidateTools = getPreferredTools('circle', r * 2, availableTools);
-            if (candidateTools.length === 0) continue;
-
-            const p1Key = `${seg.p1.x.toFixed(3)},${seg.p1.y.toFixed(3)}`;
-            const p2Key = `${seg.p2.x.toFixed(3)},${seg.p2.y.toFixed(3)}`;
-            const startIsJoint = jointVertices.has(p1Key);
-            const endIsJoint = jointVertices.has(p2Key);
-
-            for (const tool of candidateTools) {
-                const toolRadius = tool.width / 2;
-                const diameter = tool.width;
-
-                // Strategy 1: Exact Match (Single Hit Center)
-                if (Math.abs(diameter - (r * 2)) <= 0.5) {
-                    const centerKey = `${center.x.toFixed(3)},${center.y.toFixed(3)}`;
-                    if (punchedHoleCenters.has(centerKey)) break;
-
-                    if (seg.type === 'CIRCLE' || (!startIsJoint && !endIsJoint)) {
-                         if (!isToolIntruding(tool, center.x, center.y, 0, partGeometry)) {
-                             const p = [{ toolId: tool.id, x: center.x, y: center.y, rotation: 0, lineId: lineGroupId }];
-                             recordPunch(i, p);
-                             punchedHoleCenters.add(centerKey);
-                             
-                             // Cleanup siblings
-                             const radiusTol = 0.5;
-                             const matchTolSq = MATCH_TOL * MATCH_TOL;
-                             for (let j = 0; j < segments.length; j++) {
-                                if (i === j || processedSegmentIndices.has(j)) continue;
-                                const other = segments[j];
-                                if (other.type !== 'ARC' && other.type !== 'CIRCLE') continue;
-                                if (Math.abs((other.radius || 0) - r) > radiusTol) continue;
-                                if (other.center && distSq(other.center, center) < matchTolSq) processedSegmentIndices.add(j);
-                             }
-                             break; 
-                         }
-                    }
-                }
-
-                // Strategy 2: Nibbling
-                const testR = r + 0.5; 
-                const midAngleRad = degreesToRadians((startAngle + endAngle) / 2);
-                const testP = { 
-                    x: center.x + testR * Math.cos(midAngleRad), 
-                    y: center.y + testR * Math.sin(midAngleRad) 
-                }; 
-                const rawTestP = denormalizePoint(testP, height, bbox);
-                
-                const outsideIsMaterial = isPointInsideContour(rawTestP, partGeometry);
-                
-                let pathRadius = 0;
-                if (outsideIsMaterial) {
-                    pathRadius = r - toolRadius;
-                } else {
-                    pathRadius = r + toolRadius;
-                }
-
-                if (pathRadius <= 0) continue;
-
-                const chordStep = calculateScallopStep(toolRadius, scallopHeight);
-                const circumference = 2 * Math.PI * pathRadius;
-                const angleStepDeg = (chordStep / circumference) * 360;
-
-                let sweep = endAngle - startAngle;
-                let currentStartAngle = startAngle;
-
-                if (startIsJoint) {
-                    const jointAngle = (microJointLength / circumference) * 360;
-                    currentStartAngle += jointAngle;
-                    sweep -= jointAngle;
-                }
-                if (endIsJoint) {
-                    const jointAngle = (microJointLength / circumference) * 360;
-                    sweep -= jointAngle;
-                }
-
-                if (sweep <= 0) continue;
-
-                const numHits = Math.ceil(sweep / angleStepDeg);
-                const actualAngleStep = sweep / numHits;
-                
-                let validArcNibble = true;
-                const tempPunches = [];
-
-                for (let k = 0; k <= numHits; k++) {
-                    if (seg.type === 'CIRCLE' && !startIsJoint && !endIsJoint && k === numHits) continue;
-
-                    const currentAngle = currentStartAngle + k * actualAngleStep;
-                    const rad = degreesToRadians(currentAngle);
-                    
-                    const px = center.x + pathRadius * Math.cos(rad);
-                    const py = center.y + pathRadius * Math.sin(rad);
-
-                    if (isToolIntruding(tool, px, py, currentAngle, partGeometry)) {
-                        validArcNibble = false;
-                        break;
-                    }
-                    tempPunches.push({ toolId: tool.id, x: px, y: py, rotation: currentAngle, lineId: lineGroupId });
-                }
-                
-                if (validArcNibble) {
-                    recordPunch(i, tempPunches);
-                    break;
-                }
-            }
-        }
-    }
-
-    // 6. Generate Punches - PASS 2 (Lines that failed Pass 1)
-    // Relax end conditions if corners are covered by neighbors
-    for (let i = 0; i < segments.length; i++) {
-        if (processedSegmentIndices.has(i)) continue; // Already done
-
-        const seg = segments[i];
-        if (seg.type !== 'LINE') continue;
-
-        const dx = seg.p2.x - seg.p1.x;
-        const dy = seg.p2.y - seg.p1.y;
-        const length = Math.sqrt(dx*dx + dy*dy);
-        const ux = dx / length;
-        const uy = dy / length;
-        const angle = Math.atan2(dy, dx) * 180 / Math.PI;
-
-        const lineGroupId = `auto_pass2_${generateId()}`;
-
-        // Find neighbors
-        let prevPunches: Omit<PlacedTool, 'id'>[] = [];
-        let nextPunches: Omit<PlacedTool, 'id'>[] = [];
-
-        for (let j = 0; j < segments.length; j++) {
-            if (i === j) continue;
-            const other = segments[j];
-            const otherPunches = segmentPunchesMap.get(j) || [];
-            if (otherPunches.length === 0) continue;
-
-            if (distSq(other.p2, seg.p1) < tolSq || distSq(other.p1, seg.p1) < tolSq) {
-                prevPunches = otherPunches;
-            }
-            if (distSq(other.p1, seg.p2) < tolSq || distSq(other.p2, seg.p2) < tolSq) {
-                nextPunches = otherPunches;
-            }
-        }
-
-        const startCoverage = getProjectedCoverage(seg.p1, {x: ux, y: uy}, prevPunches, availableTools);
-        const endCoverage = getProjectedCoverage(seg.p2, {x: -ux, y: -uy}, nextPunches, availableTools);
-
-        const startRelax = startCoverage > overlap ? startCoverage - overlap : 0;
-        const endRelax = endCoverage > overlap ? endCoverage - overlap : 0;
-
-        if (startRelax === 0 && endRelax === 0) continue;
-
-        const reqLen = length - startRelax - endRelax;
-        
-        if (reqLen <= 0) continue;
-
-        const probeDist = 0.5;
-        const nx = -uy;
-        const ny = ux;
-        const midX = (seg.p1.x + seg.p2.x) / 2;
-        const midY = (seg.p1.y + seg.p2.y) / 2;
-        const sideProbeP = { x: midX + nx * probeDist, y: midY + ny * probeDist };
-        const rawSideProbeP = denormalizePoint(sideProbeP, height, bbox);
-        const isMaterialSide = isPointInsideContour(rawSideProbeP, partGeometry);
-        const punchNx = isMaterialSide ? -nx : nx;
-        const punchNy = isMaterialSide ? -ny : ny;
-
-        const candidateTools = getPreferredTools('line', reqLen, availableTools);
-
-        for (const tool of candidateTools) {
-            let toolRotation = angle;
-            let toolWidthAlongLine = tool.width;
-            let toolHeightNormal = tool.height;
-
-            if (tool.width < tool.height) {
-                toolRotation += 90;
-                toolWidthAlongLine = tool.height;
-                toolHeightNormal = tool.width;
-            }
-            
-            const offsetDist = toolHeightNormal / 2;
-            const offsetX = punchNx * offsetDist;
-            const offsetY = punchNy * offsetDist;
-
-            // Strategy 2A: Single Hit (Gap Filling)
-            if (toolWidthAlongLine >= (reqLen - 0.5)) {
-                const gapCenterDist = (startRelax + (length - endRelax)) / 2;
-                const cx = seg.p1.x + ux * gapCenterDist + offsetX;
-                const cy = seg.p1.y + uy * gapCenterDist + offsetY;
-
-                if (!isToolIntruding(tool, cx, cy, toolRotation, partGeometry)) {
-                    recordPunch(i, [{
-                        toolId: tool.id,
-                        x: cx,
-                        y: cy,
-                        rotation: toolRotation,
-                        lineId: lineGroupId
-                    }]);
-                    break;
-                }
-            } 
-            // Strategy 2B: Nibbling (Gap Filling)
-            else if (toolWidthAlongLine < reqLen) {
-                const gapStart = startRelax;
-                const gapEnd = length - endRelax;
-                
-                const toolHalf = toolWidthAlongLine / 2;
-                const firstCenterPos = gapStart + toolHalf;
-                const lastCenterPos = gapEnd - toolHalf;
-                const centerDistance = lastCenterPos - firstCenterPos;
-
-                if (centerDistance >= 0) {
-                     const step = Math.max(0.5, toolWidthAlongLine - overlap);
-                     const numHits = Math.ceil(centerDistance / step) + 1;
-                     const adjustedStep = numHits > 1 ? centerDistance / (numHits - 1) : 0;
-                     
-                     const baseX = seg.p1.x + offsetX;
-                     const baseY = seg.p1.y + offsetY;
-                     
-                     let validNibble = true;
-                     const tempPunches = [];
-
-                     for (let k = 0; k < numHits; k++) {
-                         const distFromStart = firstCenterPos + (k * adjustedStep);
-                         const px = baseX + ux * distFromStart;
-                         const py = baseY + uy * distFromStart;
-                         
-                         if (isToolIntruding(tool, px, py, toolRotation, partGeometry)) {
-                             validNibble = false;
-                             break;
-                         }
-                         tempPunches.push({ toolId: tool.id, x: px, y: py, rotation: toolRotation, lineId: lineGroupId });
-                     }
-
-                     if (validNibble) {
-                         recordPunch(i, tempPunches);
-                         break; 
-                     }
-                }
-            }
-        }
-    }
+    });
 
     return punches;
 };

@@ -108,102 +108,115 @@ const degreesToRadians = (degrees: number) => degrees * (Math.PI / 180);
 /**
  * Converts an array of parsed DXF entities into a single SVG path string.
  * Coordinates are normalized to (0,0) at Bottom-Left (Y-Up Cartesian).
+ * RETURNS: Normalized Entities as well, for consistent storage in Part.
  */
-export const dxfEntitiesToSvg = (entities: DxfEntity[]): { path: string, width: number, height: number, bbox: { minX: number, minY: number, maxX: number, maxY: number } } => {
+export const dxfEntitiesToSvg = (entities: DxfEntity[]): { 
+    path: string, 
+    width: number, 
+    height: number, 
+    bbox: { minX: number, minY: number, maxX: number, maxY: number },
+    normalizedEntities: DxfEntity[] 
+} => {
     if (entities.length === 0) {
-        return { path: '', width: 0, height: 0, bbox: { minX: 0, minY: 0, maxX: 0, maxY: 0 } };
+        return { path: '', width: 0, height: 0, bbox: { minX: 0, minY: 0, maxX: 0, maxY: 0 }, normalizedEntities: [] };
     }
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     
+    // 1. Calculate Bounding Box of RAW entities
+    const updateBounds = (x: number, y: number) => {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+    }
+
     entities.forEach(entity => {
         switch(entity.type) {
             case 'LWPOLYLINE':
-                entity.vertices.forEach(v => {
-                    minX = Math.min(minX, v.x);
-                    minY = Math.min(minY, v.y);
-                    maxX = Math.max(maxX, v.x);
-                    maxY = Math.max(maxY, v.y);
-                });
+                entity.vertices.forEach(v => updateBounds(v.x, v.y));
                 break;
             case 'LINE':
-                minX = Math.min(minX, entity.start.x, entity.end.x);
-                minY = Math.min(minY, entity.start.y, entity.end.y);
-                maxX = Math.max(maxX, entity.start.x, entity.end.x);
-                maxY = Math.max(maxY, entity.start.y, entity.end.y);
+                updateBounds(entity.start.x, entity.start.y);
+                updateBounds(entity.end.x, entity.end.y);
                 break;
             case 'CIRCLE':
-                minX = Math.min(minX, entity.center.x - entity.radius);
-                minY = Math.min(minY, entity.center.y - entity.radius);
-                maxX = Math.max(maxX, entity.center.x + entity.radius);
-                maxY = Math.max(maxY, entity.center.y + entity.radius);
+                updateBounds(entity.center.x - entity.radius, entity.center.y - entity.radius);
+                updateBounds(entity.center.x + entity.radius, entity.center.y + entity.radius);
                 break;
             case 'ARC':
-                const center = entity.center;
-                const r = entity.radius;
-                const startAngle = entity.startAngle;
-                let endAngle = entity.endAngle;
-
-                if (endAngle < startAngle) {
-                    endAngle += 360;
-                }
+                // Simplified bbox for Arc (using center + radius points)
+                // A precise bbox for arc is complex, we stick to cardinal points + start/end for safety
+                // Or simply checking start/end and circle bounds if contained.
+                // For simplicity in this context, we check start, end, and if quadrants are included.
+                const startRad = degreesToRadians(entity.startAngle);
+                const endRad = degreesToRadians(entity.endAngle);
+                updateBounds(entity.center.x + entity.radius * Math.cos(startRad), entity.center.y + entity.radius * Math.sin(startRad));
+                updateBounds(entity.center.x + entity.radius * Math.cos(endRad), entity.center.y + entity.radius * Math.sin(endRad));
                 
-                const points = [];
-                points.push({
-                    x: center.x + r * Math.cos(degreesToRadians(startAngle)),
-                    y: center.y + r * Math.sin(degreesToRadians(startAngle))
-                });
-                points.push({
-                    x: center.x + r * Math.cos(degreesToRadians(endAngle)),
-                    y: center.y + r * Math.sin(degreesToRadians(endAngle))
-                });
-                
-                // Add cardinal points if within arc sweep
+                // Check cardinal points
                 for (let deg = 0; deg <= 360; deg += 90) {
-                     if (deg > startAngle && deg < endAngle) {
-                         points.push({ x: center.x + r * Math.cos(degreesToRadians(deg)), y: center.y + r * Math.sin(degreesToRadians(deg))});
+                     // Check if deg is within start-end range
+                     // Normalize angles to 0-360 for comparison
+                     let s = entity.startAngle;
+                     let e = entity.endAngle;
+                     if(e < s) e += 360;
+                     let d = deg;
+                     if(d < s) d += 360;
+                     
+                     if (d >= s && d <= e) {
+                         const rRad = degreesToRadians(deg);
+                         updateBounds(entity.center.x + entity.radius * Math.cos(rRad), entity.center.y + entity.radius * Math.sin(rRad));
                      }
                 }
-
-                points.forEach(p => {
-                    minX = Math.min(minX, p.x);
-                    minY = Math.min(minY, p.y);
-                    maxX = Math.max(maxX, p.x);
-                    maxY = Math.max(maxY, p.y);
-                });
                 break;
         }
     });
     
-    // Exact bounds
-    const bbox = { minX, minY, maxX, maxY };
+    // 2. Exact bounds
     const width = maxX - minX;
     const height = maxY - minY;
     
-    // Normalize logic: Shift so (minX, minY) -> (0, 0). Preserve Y-Up.
-    const normalize = (p: Point) => ({
-        x: p.x - bbox.minX,
-        y: p.y - bbox.minY
-    });
+    // 3. Create Normalized Entities (Deep Copy with shift)
+    const normalizedEntities: DxfEntity[] = JSON.parse(JSON.stringify(entities));
+    
+    const normalizePoint = (p: Point) => {
+        p.x -= minX;
+        p.y -= minY;
+    };
 
-    const pathDataParts: string[] = [];
-
-    entities.forEach(entity => {
+    normalizedEntities.forEach(entity => {
         switch(entity.type) {
             case 'LWPOLYLINE':
-                const normalizedVertices = entity.vertices.map(normalize);
-                const pathData = normalizedVertices
+                entity.vertices.forEach(normalizePoint);
+                break;
+            case 'LINE':
+                normalizePoint(entity.start);
+                normalizePoint(entity.end);
+                break;
+            case 'CIRCLE':
+            case 'ARC':
+                normalizePoint(entity.center);
+                break;
+        }
+    });
+
+    // 4. Generate SVG Path from NORMALIZED entities
+    const pathDataParts: string[] = [];
+
+    normalizedEntities.forEach(entity => {
+        switch(entity.type) {
+            case 'LWPOLYLINE':
+                const pathData = entity.vertices
                     .map((v, i) => `${i === 0 ? 'M' : 'L'} ${v.x.toFixed(3)} ${v.y.toFixed(3)}`)
                     .join(' ');
                 pathDataParts.push(pathData + (entity.closed ? ' Z' : ''));
                 break;
             case 'LINE':
-                const start = normalize(entity.start);
-                const end = normalize(entity.end);
-                pathDataParts.push(`M ${start.x.toFixed(3)} ${start.y.toFixed(3)} L ${end.x.toFixed(3)} ${end.y.toFixed(3)}`);
+                pathDataParts.push(`M ${entity.start.x.toFixed(3)} ${entity.start.y.toFixed(3)} L ${entity.end.x.toFixed(3)} ${entity.end.y.toFixed(3)}`);
                 break;
             case 'CIRCLE':
-                const c = normalize(entity.center);
+                const c = entity.center;
                 const r = entity.radius;
                 // Draw two arcs to form a circle
                 pathDataParts.push(`M ${(c.x - r).toFixed(3)} ${c.y.toFixed(3)} A ${r.toFixed(3)} ${r.toFixed(3)} 0 1 0 ${(c.x + r).toFixed(3)} ${c.y.toFixed(3)}`);
@@ -218,17 +231,14 @@ export const dxfEntitiesToSvg = (entities: DxfEntity[]): { path: string, width: 
                 const startRad = degreesToRadians(startAngle);
                 const endRad = degreesToRadians(endAngle);
 
-                const startPointRaw = {
+                const startPoint = {
                     x: arcCenter.x + arcRadius * Math.cos(startRad),
                     y: arcCenter.y + arcRadius * Math.sin(startRad)
                 };
-                const endPointRaw = {
+                const endPoint = {
                     x: arcCenter.x + arcRadius * Math.cos(endRad),
                     y: arcCenter.y + arcRadius * Math.sin(endRad)
                 };
-
-                const startPoint = normalize(startPointRaw);
-                const endPoint = normalize(endPointRaw);
                 
                 let angleSpan = endAngle - startAngle;
                 if (angleSpan < 0) angleSpan += 360;
@@ -242,5 +252,15 @@ export const dxfEntitiesToSvg = (entities: DxfEntity[]): { path: string, width: 
     });
     
     const finalPath = pathDataParts.join(' ');
-    return { path: finalPath, width, height, bbox };
+    
+    // Return Normalized BBox (0,0, W, H)
+    const normalizedBbox = { minX: 0, minY: 0, maxX: width, maxY: height };
+
+    return { 
+        path: finalPath, 
+        width, 
+        height, 
+        bbox: normalizedBbox,
+        normalizedEntities 
+    };
 };

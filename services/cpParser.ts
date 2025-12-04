@@ -66,51 +66,66 @@ const findOrCreateTool = (name: string, library: Tool[]): Tool => {
     };
 };
 
-// Calculates dot product of two vectors
-const dot = (v1: Point, v2: Point) => v1.x * v2.x + v1.y * v2.y;
-
-// Normalizes a vector
-const normalizeVec = (v: Point) => {
-    const len = Math.sqrt(v.x * v.x + v.y * v.y);
-    return len === 0 ? {x:0, y:0} : {x: v.x/len, y: v.y/len};
-};
-
 /**
  * Determines SVG Arc parameters (Large Arc, Sweep).
- * Enforces strictly Positive (CCW) winding for ALL contours to resolve ambiguity between short/long arcs.
- * This assumes the CP file defines points in a consistent CCW order for valid material boundaries.
+ * Handles direction detection (CW vs CCW) correctly based on contour winding.
  */
 const calculateArcParams = (
-    prev: Point, 
+    prev: Point | null, 
     start: Point, 
     center: Point, 
     end: Point
-): { largeArc: number, sweep: number, radius: number } => {
+): { largeArc: number, sweep: number, radius: number, isCCW: boolean } => {
     
-    const radius = Math.sqrt(Math.pow(start.x - center.x, 2) + Math.pow(start.y - center.y, 2));
+    // Average radius to mitigate center point precision errors in CP files
+    const r1 = Math.sqrt(Math.pow(start.x - center.x, 2) + Math.pow(start.y - center.y, 2));
+    const r2 = Math.sqrt(Math.pow(end.x - center.x, 2) + Math.pow(end.y - center.y, 2));
+    const radius = (r1 + r2) / 2; 
     
-    // Always assume Counter-Clockwise (CCW) traversal in World Coordinates
-    // This fixes "Long Arc" issues by forcing the delta to be positive.
-    const isCCW = true;
-
-    // Calculate Angles
+    // Calculate Raw Angles (in Radians -PI to PI)
     const angStart = Math.atan2(start.y - center.y, start.x - center.x);
     const angEnd = Math.atan2(end.y - center.y, end.x - center.x);
     
-    let delta = angEnd - angStart;
-    
-    // Normalize delta to be positive (0 to 2PI)
-    while (delta <= 0) delta += 2 * Math.PI;
-    
-    const largeArc = Math.abs(delta) > Math.PI ? 1 : 0;
-    
-    // Map to SVG Flags
-    // Standard CP/NC World coordinates: Y-Up.
-    // SVG coordinates: Y-Down.
-    // World CCW (+Angle) maps to SVG Sweep 0 (Counter-Clockwise visual in Y-Down).
-    const sweep = 0;
+    // Determine Winding Direction (CCW or CW) based on "Turn" from previous segment
+    // This resolves the ambiguity of which arc segment to draw (short vs long).
+    let isCCW = true;
 
-    return { largeArc, sweep, radius };
+    if (prev) {
+        const v1x = start.x - prev.x;
+        const v1y = start.y - prev.y;
+        const v2x = end.x - start.x;
+        const v2y = end.y - start.y;
+        
+        // Cross Product (2D): determines turn direction relative to previous path
+        // Positive = Left Turn (CCW in standard Cartesian)
+        const cross = v1x * v2y - v1y * v2x;
+        isCCW = cross >= 0;
+    } else {
+        // Fallback if no previous point (rare for valid CP contours): assume shortest path
+        let tmpDiff = angEnd - angStart;
+        while (tmpDiff <= -Math.PI) tmpDiff += 2 * Math.PI;
+        while (tmpDiff > Math.PI) tmpDiff -= 2 * Math.PI;
+        isCCW = tmpDiff > 0;
+    }
+
+    // Calculate angular difference based on the FORCED winding direction
+    let diff = angEnd - angStart;
+
+    if (isCCW) {
+        // If Counter-Clockwise, difference must be Positive (0 to 2PI)
+        while (diff <= 0) diff += 2 * Math.PI;
+    } else {
+        // If Clockwise, difference must be Negative (-2PI to 0)
+        while (diff >= 0) diff -= 2 * Math.PI;
+    }
+
+    // largeArc flag: 1 if the arc spans more than 180 degrees
+    const largeArc = Math.abs(diff) > Math.PI ? 1 : 0;
+
+    // Sweep flag: 1 for Positive angle direction (CCW), 0 for Negative (CW)
+    const sweep = isCCW ? 1 : 0;
+
+    return { largeArc, sweep, radius, isCCW };
 };
 
 export const parseCp = (content: string, fileName: string, existingTools: Tool[]): Part | null => {
@@ -119,9 +134,8 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
     const geometryPoints: {x: number, y: number, flag: number}[] = [];
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
 
-    // 1. Parse Geometry
+    // 1. Parse Geometry Raw
     let lineIdx = 2;
-    
     for (; lineIdx < lines.length; lineIdx++) {
         const line = lines[lineIdx];
         if (line.startsWith('UNITS') || line.startsWith('PART_SIZE')) break;
@@ -131,7 +145,6 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
             const x = parseFloat(parts[0]);
             const y = parseFloat(parts[1]);
             const flag = parseInt(parts[2]);
-            
             if (flag === 99) break;
 
             if (!isNaN(x) && !isNaN(y) && !isNaN(flag)) {
@@ -151,73 +164,77 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
     const width = maxX - minX;
     const height = maxY - minY;
     
+    // Normalization Function: Shifts so bounding box min is (0,0)
+    // IMPORTANT: CP coordinates are typically Y-Up. 
+    // We normalize to a Cartesian 0,0 frame.
     const normalize = (x: number, y: number) => ({
         x: x - minX,
-        y: maxY - y
+        y: y - minY 
     });
 
     let svgPath = "";
-    
-    // Store entities for script generation (Raw Coordinates)
     const entities: DxfEntity[] = [];
 
     for (let i = 0; i < geometryPoints.length; i++) {
         const pt = geometryPoints[i];
         const n = normalize(pt.x, pt.y);
         
-        // Get previous point for entity construction
         const prevRaw = i > 0 ? geometryPoints[i-1] : null;
 
         if (pt.flag === 9 || pt.flag === 8) {
             svgPath += `M ${n.x.toFixed(3)} ${n.y.toFixed(3)} `;
         } else if (pt.flag === 0) {
-            // NOTE: If previous point was an Arc Center (-1), this point (End of Arc)
-            // was already reached by the Arc command. 
             if (prevRaw && prevRaw.flag !== -1) {
                 svgPath += `L ${n.x.toFixed(3)} ${n.y.toFixed(3)} `;
+                const prevN = normalize(prevRaw.x, prevRaw.y);
                 entities.push({
                     type: 'LINE',
-                    start: { x: prevRaw.x, y: prevRaw.y },
-                    end: { x: pt.x, y: pt.y }
+                    start: { x: prevN.x, y: prevN.y },
+                    end: { x: n.x, y: n.y }
                 });
             }
         } else if (pt.flag === -1) {
-            // Arc: Previous(Start) -> Current(Center) -> Next(End)
             if (i > 0 && i + 1 < geometryPoints.length) {
                 const startRaw = geometryPoints[i-1];
                 const centerRaw = pt;
                 const endRaw = geometryPoints[i+1];
                 
-                // Get 'Prev' for tangent continuity (i-2) is not needed with strict winding
                 let prevRawForTan = startRaw;
+                // Try to find the point BEFORE the start of the arc to determine tangency/direction
                 if (i > 1 && geometryPoints[i-1].flag === 0) {
                     prevRawForTan = geometryPoints[i-2];
                 }
 
-                // Calculate in RAW coordinates (World Y-Up) for correct winding logic
-                const { largeArc, sweep, radius } = calculateArcParams(prevRawForTan, startRaw, centerRaw, endRaw);
+                const { largeArc, sweep, radius, isCCW } = calculateArcParams(prevRawForTan, startRaw, centerRaw, endRaw);
                 
                 const endN = normalize(endRaw.x, endRaw.y);
+                const centerN = normalize(centerRaw.x, centerRaw.y);
                 
                 svgPath += `A ${radius.toFixed(3)} ${radius.toFixed(3)} 0 ${largeArc} ${sweep} ${endN.x.toFixed(3)} ${endN.y.toFixed(3)} `;
                 
-                // Populate Entity
                 const startAngle = Math.atan2(startRaw.y - centerRaw.y, startRaw.x - centerRaw.x) * 180 / Math.PI;
                 const endAngle = Math.atan2(endRaw.y - centerRaw.y, endRaw.x - centerRaw.x) * 180 / Math.PI;
                 
+                // For DXF Entities (Internal Geometry Model):
+                // 'ARC' entities are strictly CCW.
+                // If the move is CW, we swap Start/End angles to represent the same physical curve 
+                // in a CCW definition (Start=EndVisual, End=StartVisual).
+                const entityStart = isCCW ? startAngle : endAngle;
+                const entityEnd = isCCW ? endAngle : startAngle;
+
                 entities.push({
                     type: 'ARC',
-                    center: { x: centerRaw.x, y: centerRaw.y },
+                    center: { x: centerN.x, y: centerN.y },
                     radius: radius,
-                    startAngle: startAngle,
-                    endAngle: endAngle
+                    startAngle: entityStart,
+                    endAngle: entityEnd
                 });
             }
         }
     }
     svgPath += "Z";
 
-    // 2. Parse Material & Tooling
+    // 2. Parse Tooling
     let materialCode = 'St-3';
     let materialThick = 1.0;
     const punches: PlacedTool[] = [];
@@ -249,9 +266,9 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
             }
         } else if (line.startsWith('ROTATION')) {
             if (i + 1 < lines.length) {
-                // Negate rotation to match visualization coordinate system
-                // (CP rotation likely CW or Y-based, Vis uses CCW)
-                currentRotation = -(parseFloat(lines[i+1]) || 0);
+                // CP files usually follow standard Cartesian CCW rotation.
+                // Since our app uses Y-Up (standard Cartesian), no negation is needed.
+                currentRotation = (parseFloat(lines[i+1]) || 0);
                 i++;
             }
         } else if (line.startsWith('STRIKE')) {
@@ -261,6 +278,7 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
                 if (parts.length >= 2 && currentTool) {
                     const x = parseFloat(parts[0]);
                     const y = parseFloat(parts[1]);
+                    // Normalize Punch Coords
                     const n = normalize(x, y);
                     punches.push({
                         id: generateId(),
@@ -296,6 +314,7 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
                     for(let k=0; k<=count; k++) {
                         const rx = x1 + dx*k;
                         const ry = y1 + dy*k;
+                        // Normalize Nibble Coords
                         const n = normalize(rx, ry);
                         punches.push({
                             id: generateId(),
@@ -321,8 +340,8 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
             path: svgPath,
             width,
             height,
-            entities: entities, 
-            bbox: { minX, minY, maxX, maxY }
+            entities: entities, // Normalized
+            bbox: { minX: 0, minY: 0, maxX: width, maxY: height } // Normalized BBox
         },
         material: {
             code: materialCode,

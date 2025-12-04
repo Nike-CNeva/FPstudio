@@ -1,10 +1,12 @@
 
-import React, { useState, ChangeEvent, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { AppMode, NestLayout, Part, Tool, PlacedTool, ManualPunchMode, Point, NibbleSettings, DestructSettings, PlacementReference, SnapMode, ScheduledPart, TurretLayout, AutoPunchSettings, PlacementSide, TeachCycle, ToastMessage, ParametricScript, MachineSettings, OptimizerSettings, PunchOp } from './types';
 import { initialTools, initialParts, initialNests, initialTurretLayouts, initialScripts, defaultMachineSettings, defaultOptimizerSettings } from './data/initialData';
 import { generateId, getPartBaseName, generatePartNameFromProfile } from './utils/helpers';
 import { usePanAndZoom } from './hooks/usePanAndZoom';
 import { useConfirmation } from './hooks/useConfirmation';
+import { useFileImport } from './hooks/useFileImport';
+import { useManualPunch } from './hooks/useManualPunch';
 
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
@@ -22,13 +24,10 @@ import { TeachCycleSaveModal } from './components/TeachCycleSaveModal';
 import { ConfirmationModal } from './components/common/ConfirmationModal';
 import { ToastContainer } from './components/common/Toast';
 
-import { parseDxf, dxfEntitiesToSvg } from './services/dxfParser';
-import { parseCp } from './services/cpParser';
-import { generateContourPunches, generateNibblePunches, generateDestructPunches } from './services/punching';
+import { generateContourPunches } from './services/punching';
 import { nestingGenerator } from './services/nesting';
 import { generateGCode, calculateOptimizedPath } from './services/gcode';
-import { getGeometryFromEntities, findSnapPoint, findClosestSegment, detectPartProfile } from './services/geometry';
-import { calculateEdgePlacement } from './services/placement';
+import { getGeometryFromEntities, findClosestSegment, detectPartProfile } from './services/geometry';
 import { generateParametricScript } from './services/scriptGenerator';
 import { createTeachCycleFromSelection } from './services/teachLogic';
 
@@ -58,10 +57,6 @@ const App: React.FC = () => {
 
     const [manualPunchMode, setManualPunchMode] = useState<ManualPunchMode>(ManualPunchMode.Punch);
     const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
-    const [punchCreationStep, setPunchCreationStep] = useState(0);
-    const [punchCreationPoints, setPunchCreationPoints] = useState<Point[]>([]);
-    const [placementReference, setPlacementReference] = useState<PlacementReference>(PlacementReference.Edge);
-    const [placementSide, setPlacementSide] = useState<PlacementSide>(PlacementSide.Outside);
     const [punchOrientation, setPunchOrientation] = useState(0);
     const [snapMode, setSnapMode] = useState<SnapMode>(SnapMode.Vertex);
     const [punchOffset, setPunchOffset] = useState<number>(0);
@@ -75,16 +70,19 @@ const App: React.FC = () => {
 
     const [showGCodeModal, setShowGCodeModal] = useState(false);
     const [showOptimizerModal, setShowOptimizerModal] = useState(false);
-    const [isGeneratingGCode, setIsGeneratingGCode] = useState(false); // Distinction: Are we optimizing path OR generating code?
+    const [isGeneratingGCode, setIsGeneratingGCode] = useState(false);
     const [generatedGCode, setGeneratedGCode] = useState('');
     const [showAutoPunchSettingsModal, setShowAutoPunchSettingsModal] = useState(false);
     const [showTeachSaveModal, setShowTeachSaveModal] = useState(false);
     
-    // Nesting Process State
     const [isNestingProcessing, setIsNestingProcessing] = useState(false);
-    
     const [toasts, setToasts] = useState<ToastMessage[]>([]);
     
+    const activePartProcessedGeometry = useMemo(() => activePart ? getGeometryFromEntities(activePart) : null, [activePart]);
+    const activeNest = nests.find(n => n.id === activeNestId) || null;
+    const currentNestSheet = activeNest?.sheets[activeSheetIndex] || null;
+    const selectedTool = tools.find(t => t.id === selectedToolId) || null;
+
     const addToast = (message: string, type: ToastMessage['type']) => {
         setToasts(prev => [...prev, { id: generateId(), message, type }]);
     };
@@ -93,10 +91,34 @@ const App: React.FC = () => {
     };
 
     const { confirmationState, confirm, closeConfirmation } = useConfirmation();
-    
-    const activeNest = nests.find(n => n.id === activeNestId) || null;
-    const currentNestSheet = activeNest?.sheets[activeSheetIndex] || null;
-    const selectedTool = tools.find(t => t.id === selectedToolId) || null;
+    const { handleFileUpload } = useFileImport({ tools, setMode, setActivePart, addToast });
+
+    // --- HELPER: Add Punches with ID generation ---
+    const addPunchesWithCollisionCheck = (punchesData: Omit<PlacedTool, 'id'>[]) => {
+        if (!activePart) return;
+        const newPunches = punchesData.map(p => ({ ...p, id: generateId() }));
+        setActivePart({ ...activePart, punches: [...activePart.punches, ...newPunches] });
+    };
+
+    // --- HOOK: Manual Punching Logic ---
+    const { 
+        handleCanvasClick: handleManualPunchClick, 
+        punchCreationStep, 
+        punchCreationPoints,
+        resetManualState: resetPunchStep
+    } = useManualPunch({
+        activePart,
+        activePartProcessedGeometry,
+        selectedTool,
+        manualPunchMode,
+        punchOrientation,
+        punchOffset,
+        snapMode,
+        nibbleSettings,
+        destructSettings,
+        onAddPunches: (p) => { addPunchesWithCollisionCheck(p); },
+        setSelectedPunchId
+    });
 
     // Reset Optimization when sheet changes
     useEffect(() => {
@@ -182,65 +204,46 @@ const App: React.FC = () => {
         }
     };
 
-    const handleCanvasClick = (point: Point) => {
+    const handleClearAllPunches = () => {
+        if (!activePart) return;
+        confirm("Очистка", "Удалить все установленные инструменты?", () => {
+            setActivePart({...activePart, punches: []});
+            addToast("Инструменты удалены", "info");
+        });
+    };
+
+    const handleCanvasClick = (rawPoint: Point) => {
         if (mode === AppMode.Nesting) return;
         if (mode !== AppMode.PartEditor || !activePart) return;
+
+        // Invert Y for Teach Logic or simple selection logic if needed in App
+        const point = { x: rawPoint.x, y: -rawPoint.y };
+
         if (teachMode) {
              const closestSeg = findClosestSegment(point, activePartProcessedGeometry);
              if (closestSeg) {
+                 // Re-find index
+                 // Optimization: findClosestSegment returns segment data, we need index.
+                 // We can do a quick lookup or just distance check again.
                  const idx = activePartProcessedGeometry?.segments.findIndex(s => 
-                     s.p1.x === closestSeg.p1.x && s.p1.y === closestSeg.p1.y &&
-                     s.p2.x === closestSeg.p2.x && s.p2.y === closestSeg.p2.y
+                     Math.abs(s.p1.x - closestSeg.p1.x) < 0.001 && Math.abs(s.p1.y - closestSeg.p1.y) < 0.001 &&
+                     Math.abs(s.p2.x - closestSeg.p2.x) < 0.001 && Math.abs(s.p2.y - closestSeg.p2.y) < 0.001
                  ) ?? -1;
+                 
                  if (idx !== -1) {
                      setSelectedSegmentIds(prev => prev.includes(idx) ? prev.filter(i => i !== idx) : [...prev, idx]);
                  }
              }
              return;
         }
+        
         if (selectedPunchId) setSelectedPunchId(null);
         if (!selectedToolId || !selectedTool) return;
 
-        const snapResult = findSnapPoint(point, activePartProcessedGeometry, snapMode);
-        const finalPoint = snapResult?.point ?? point;
-
-        switch(manualPunchMode) {
-            case ManualPunchMode.Punch: {
-                if (placementReference === PlacementReference.Center) {
-                    addPunchesWithCollisionCheck([{ toolId: selectedToolId, x: finalPoint.x, y: finalPoint.y, rotation: punchOrientation }]);
-                    return;
-                }
-                const placementAngle = snapResult?.angle ?? 0;
-                const { x, y, rotation } = calculateEdgePlacement(finalPoint, placementAngle, selectedTool, punchOrientation, punchOffset, snapResult?.snapTarget ?? 'middle', snapResult?.wasNormalized ?? false, placementSide);
-                addPunchesWithCollisionCheck([{ toolId: selectedToolId, x, y, rotation }]);
-                break;
-            }
-            case ManualPunchMode.Nibble: {
-                const closestSeg = findClosestSegment(point, activePartProcessedGeometry);
-                if (closestSeg) {
-                     const punches = generateNibblePunches(closestSeg.p1, closestSeg.p2, selectedTool, nibbleSettings, closestSeg.angle, closestSeg.wasNormalized, punchOrientation, punchOffset);
-                    addPunchesWithCollisionCheck(punches);
-                }
-                break;
-            }
-            case ManualPunchMode.Destruct: {
-                if (punchCreationStep === 0) {
-                    setPunchCreationPoints([finalPoint]);
-                    setPunchCreationStep(1);
-                } else {
-                    const [startPoint] = punchCreationPoints;
-                    const newPunchesData = generateDestructPunches(startPoint, finalPoint, selectedTool, destructSettings);
-                    addPunchesWithCollisionCheck(newPunchesData);
-                }
-                break;
-            }
-        }
+        // Delegate to Manual Punch Hook
+        handleManualPunchClick(rawPoint);
     };
     
-    const handleTeachPunchSelect = (id: string) => {
-        if (!teachMode) { setSelectedPunchId(id); return; }
-        setSelectedTeachPunchIds(prev => prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id]);
-    };
     const handleTeachBulkSelect = (segmentIndices: number[], punchIds: string[], add: boolean) => {
         if (add) {
             setSelectedSegmentIds(prev => Array.from(new Set([...prev, ...segmentIndices])));
@@ -263,8 +266,6 @@ const App: React.FC = () => {
 
     const { svgRef, viewBox, setViewBox, isDragging, getPointFromEvent, panZoomHandlers } = usePanAndZoom({ x: 0, y: 0, width: 100, height: 100 }, { onClick: handleCanvasClick });
 
-    const activePartProcessedGeometry = useMemo(() => activePart ? getGeometryFromEntities(activePart) : null, [activePart]);
-
     useEffect(() => {
         if (activePart) {
             setViewBox({ x: -5, y: -activePart.geometry.height - 5, width: activePart.geometry.width + 10, height: activePart.geometry.height + 10 });
@@ -284,38 +285,6 @@ const App: React.FC = () => {
         }
     }, [mode, activeNestId, activeSheetIndex]);
 
-    const handleFileUpload = (event: ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const content = e.target?.result as string;
-            const fileName = file.name;
-            if (fileName.toLowerCase().endsWith('.cp')) {
-                const parsedPart = parseCp(content, fileName, tools);
-                if (parsedPart) { parsedPart.profile = detectPartProfile(parsedPart.geometry); setActivePart(parsedPart); setMode(AppMode.PartEditor); addToast(`Файл ${fileName} импортирован.`, "success"); return; }
-            }
-            try {
-                const parsedEntities = parseDxf(content);
-                if (parsedEntities.length > 0) {
-                    const { path, width, height, bbox } = dxfEntitiesToSvg(parsedEntities);
-                    const newPart: Part = { id: generateId(), name: fileName.replace(/\.(dxf|DXF)$/, ''), geometry: { path, width, height, entities: parsedEntities, bbox }, punches: [], material: { code: 'St-3', thickness: 1.0, dieClearance: 0.2 }, nesting: { allow0_180: true, allow90_270: true, initialRotation: 0, commonLine: true, canMirror: false }, faceWidth: width, faceHeight: height };
-                    newPart.profile = detectPartProfile(newPart.geometry);
-                    setActivePart(newPart); setMode(AppMode.PartEditor); addToast("DXF загружен.", "success");
-                } else addToast("Ошибка DXF.", "error");
-            } catch (error) { addToast("Ошибка DXF.", "error"); }
-        };
-        reader.readAsText(file);
-        event.target.value = '';
-    };
-
-    const addPunchesWithCollisionCheck = (punchesData: Omit<PlacedTool, 'id'>[]) => {
-        if (!activePart) return;
-        const newPunches = punchesData.map(p => ({ ...p, id: generateId() }));
-        setActivePart({ ...activePart, punches: [...activePart.punches, ...newPunches] });
-        setPunchCreationStep(0); setPunchCreationPoints([]);
-    };
-    
     const handleDeletePunch = (id: string | string[]) => {
         if(!activePart) return;
         const ids = Array.isArray(id) ? id : [id];
@@ -338,7 +307,6 @@ const App: React.FC = () => {
         addToast("Запуск глубокого раскроя...", "info");
 
         try {
-            // Iterate over generator updates
             for await (const updatedSheets of nestingGenerator(activeNest.scheduledParts, parts, tools, activeNest.settings)) {
                 setNests(prev => prev.map(n => {
                     if (n.id === activeNestId) {
@@ -346,8 +314,6 @@ const App: React.FC = () => {
                     }
                     return n;
                 }));
-                // Optionally jump to latest sheet? Or stay on 0?
-                // setActiveSheetIndex(updatedSheets.length - 1); 
             }
             addToast("Раскрой завершен", "success");
         } catch(e:any) {
@@ -464,8 +430,7 @@ const App: React.FC = () => {
                             selectedToolId={selectedToolId} setSelectedToolId={setSelectedToolId}
                             selectedPunchId={selectedPunchId} setSelectedPunchId={setSelectedPunchId}
                             onDeletePunch={handleDeletePunch} onUpdatePunch={handleUpdatePunch}
-                            placementReference={placementReference} setPlacementReference={setPlacementReference}
-                            placementSide={placementSide} setPlacementSide={setPlacementSide}
+                            onClearAllPunches={handleClearAllPunches}
                             punchOrientation={punchOrientation} setPunchOrientation={setPunchOrientation} onCyclePunchOrientation={() => setPunchOrientation((punchOrientation+90)%360)}
                             snapMode={snapMode} setSnapMode={setSnapMode}
                             punchOffset={punchOffset} setPunchOffset={setPunchOffset}
@@ -532,8 +497,8 @@ const App: React.FC = () => {
                             selectedToolId={selectedToolId}
                             selectedPunchId={selectedPunchId}
                             onSelectPunch={setSelectedPunchId}
-                            placementReference={placementReference}
-                            placementSide={placementSide}
+                            placementReference={PlacementReference.Edge}
+                            placementSide={PlacementSide.Outside}
                             punchOrientation={punchOrientation}
                             snapMode={snapMode}
                             punchOffset={punchOffset}

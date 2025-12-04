@@ -1,13 +1,12 @@
+
 import React, { MouseEvent, WheelEvent, useState, useRef } from 'react';
-import { AppMode, NestLayout, Part, Tool, Point, ManualPunchMode, PlacementReference, SnapMode, PlacedTool, PlacementSide, NestResultSheet, PlacedPart, PunchOp } from '../types';
-import { ToolSvg } from './common/ToolDisplay';
+import { AppMode, NestLayout, Part, Tool, Point, ManualPunchMode, PlacementReference, SnapMode, PlacementSide, NestResultSheet, PunchOp } from '../types';
 import { ActionButton } from './common/Button';
 import { SettingsIcon, PlusIcon, MinusIcon, MaximizeIcon } from './Icons';
-import { findSnapPoint, findClosestSegment, ProcessedGeometry, isPointInRectangle, calculateNestingSnap } from '../services/geometry';
-import { calculateEdgePlacement } from '../services/placement';
-import { generateNibblePunches, generateDestructPunches } from '../services/punching';
+import { ProcessedGeometry, isPointInRectangle, calculateNestingSnap } from '../services/geometry';
 import { ViewBox } from '../hooks/usePanAndZoom';
-
+import { PartEditorCanvas } from './canvas/PartEditorCanvas';
+import { NestingCanvas } from './canvas/NestingCanvas';
 
 interface CanvasAreaProps {
     mode: AppMode;
@@ -91,7 +90,6 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
     optimizedOperations, simulationStep = 0
 }) => {
     const [mousePos, setMousePos] = useState<Point | null>(null);
-    const selectedTool = tools.find(t => t.id === selectedToolId);
     
     // Selection Box State
     const [selectionStart, setSelectionStart] = useState<Point | null>(null);
@@ -266,127 +264,6 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
         }
     }
     
-    // --- Optimized Path Rendering ---
-    const renderOptimizedPath = () => {
-        if (!optimizedOperations || optimizedOperations.length < 2) return null;
-        
-        let pathD = "";
-        
-        pathD = `M ${optimizedOperations[0].x} ${optimizedOperations[0].y}`;
-        for(let i=1; i<optimizedOperations.length; i++) {
-            pathD += ` L ${optimizedOperations[i].x} ${optimizedOperations[i].y}`;
-        }
-
-        return (
-            <path 
-                d={pathD} 
-                fill="none" 
-                stroke="#d69e2e" // Yellow-600
-                strokeWidth="1" 
-                strokeDasharray="4 2"
-                vectorEffect="non-scaling-stroke"
-                opacity="0.7"
-                style={{ pointerEvents: 'none' }}
-            />
-        );
-    };
-
-    const renderOptimizedHead = () => {
-        if (!optimizedOperations || optimizedOperations.length === 0) return null;
-        const currentOp = optimizedOperations[simulationStep];
-        if (!currentOp) return null;
-
-        return (
-            <g transform={`translate(${currentOp.x}, ${currentOp.y})`}>
-                <line x1="-15" y1="0" x2="15" y2="0" stroke="cyan" strokeWidth="2" vectorEffect="non-scaling-stroke"/>
-                <line x1="0" y1="-15" x2="0" y2="15" stroke="cyan" strokeWidth="2" vectorEffect="non-scaling-stroke"/>
-                <circle r="5" stroke="cyan" strokeWidth="1" fill="none" vectorEffect="non-scaling-stroke"/>
-            </g>
-        )
-    };
-
-    const renderGhostGeometry = () => {
-        if (!mousePos || !activePart) return null;
-        if (manualPunchMode === ManualPunchMode.Destruct && punchCreationStep > 0) {
-            const startPoint = punchCreationPoints[0];
-            const finalPoint = findSnapPoint(mousePos, processedGeometry, snapMode)?.point ?? mousePos;
-             return <line x1={startPoint.x} y1={startPoint.y} x2={finalPoint.x} y2={finalPoint.y} stroke="yellow" strokeWidth="1" vectorEffect="non-scaling-stroke" strokeDasharray="4 2" />
-        }
-        return null;
-    };
-    
-    const renderGhostTool = () => {
-        if (!mousePos || !selectedTool || !activePart || teachMode) return null;
-
-        if (manualPunchMode === ManualPunchMode.Nibble) {
-             const closestSeg = findClosestSegment(mousePos, processedGeometry);
-             if (closestSeg) {
-                 const previewPunches = generateNibblePunches(closestSeg.p1, closestSeg.p2, selectedTool, nibbleSettings, closestSeg.angle, closestSeg.wasNormalized, punchOrientation, punchOffset);
-                 return (
-                     <g opacity="0.6">
-                         {previewPunches.map((p, idx) => (
-                             <g key={idx} transform={`translate(${p.x}, ${p.y}) rotate(${p.rotation})`} style={{ pointerEvents: 'none' }}>
-                                 <ToolSvg tool={selectedTool} />
-                             </g>
-                         ))}
-                         <line x1={closestSeg.p1.x} y1={closestSeg.p1.y} x2={closestSeg.p2.x} y2={closestSeg.p2.y} stroke="cyan" strokeWidth="2" vectorEffect="non-scaling-stroke" strokeDasharray="5 5"/>
-                     </g>
-                 );
-             }
-             return null;
-        }
-        
-        if (manualPunchMode === ManualPunchMode.Destruct && punchCreationStep === 1) return null; 
-
-        if (manualPunchMode === ManualPunchMode.Punch) {
-            const snapResult = findSnapPoint(mousePos, processedGeometry, snapMode);
-            if (!snapResult && snapMode !== SnapMode.Off && placementReference === PlacementReference.Edge) return null;
-
-            const placementPoint = snapResult?.point ?? mousePos;
-            let finalX = placementPoint.x;
-            let finalY = placementPoint.y;
-            let totalRotation = punchOrientation;
-
-            const effectivePlacementRef = (snapResult && snapMode === SnapMode.ShapeCenter) ? PlacementReference.Center : placementReference;
-
-            if (effectivePlacementRef === PlacementReference.Edge) {
-                const placementAngle = snapResult?.angle ?? 0;
-                const placement = calculateEdgePlacement(placementPoint, placementAngle, selectedTool, punchOrientation, punchOffset, snapResult?.snapTarget ?? 'middle', snapResult?.wasNormalized ?? false, placementSide);
-                finalX = placement.x;
-                finalY = placement.y;
-                totalRotation = placement.rotation;
-            }
-
-            return <>
-                <g transform={`translate(${finalX}, ${finalY}) rotate(${totalRotation})`} opacity="0.5" style={{ pointerEvents: 'none' }}><ToolSvg tool={selectedTool} /></g>
-                {snapResult && <circle cx={snapResult.point.x} cy={snapResult.point.y} r="5" fill="none" stroke="cyan" strokeWidth="2" vectorEffect="non-scaling-stroke" style={{ pointerEvents: 'none' }} />}
-            </>;
-        }
-        return null;
-    };
-    
-    const getArcPath = (seg: any): string => {
-        if (!seg.radius || !seg.center) return `M ${seg.p1.x} ${seg.p1.y} L ${seg.p2.x} ${seg.p2.y}`;
-        const r = seg.radius;
-        const p1 = seg.p1;
-        const p2 = seg.p2;
-        return `M ${p1.x} ${p1.y} A ${r} ${r} 0 0 0 ${p2.x} ${p2.y}`;
-    };
-
-    const renderTeachModeHighlights = () => {
-        if (!teachMode || !processedGeometry) return null;
-        return processedGeometry.segments.map((seg, idx) => {
-            const isSelected = selectedSegmentIds.includes(idx);
-            let pathD = seg.type === 'line' ? `M ${seg.p1.x} ${seg.p1.y} L ${seg.p2.x} ${seg.p2.y}` : getArcPath(seg);
-            return (
-                <g key={idx} className="cursor-pointer group">
-                    <path d={pathD} stroke="transparent" strokeWidth="10" fill="none" vectorEffect="non-scaling-stroke"/>
-                    <path d={pathD} stroke={isSelected ? "#ec4899" : "transparent"} strokeWidth="3" fill="none" vectorEffect="non-scaling-stroke" className={isSelected ? "" : "group-hover:stroke-purple-500/50"}/>
-                </g>
-            );
-        });
-    };
-    
     const renderSelectionBox = () => {
         if (teachMode && selectionStart && selectionCurrent) {
             const x = Math.min(selectionStart.x, selectionCurrent.x);
@@ -398,140 +275,6 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
         return null;
     };
 
-    const renderNestingSheet = () => {
-        if (!activeNest) return null;
-        let sheetW = 2500;
-        let sheetH = 1250;
-        let placedParts: PlacedPart[] = [];
-
-        if (currentNestSheet) {
-            sheetW = currentNestSheet.width;
-            sheetH = currentNestSheet.height;
-            placedParts = currentNestSheet.placedParts;
-        } else {
-             const activeStock = activeNest.settings.availableSheets.find(s => s.id === activeNest.settings.activeSheetId) || activeNest.settings.availableSheets[0];
-             if(activeStock) { sheetW = activeStock.width; sheetH = activeStock.height; }
-        }
-
-        return (
-            <svg 
-                ref={svgRef}
-                width="100%" 
-                height="100%" 
-                viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
-                {...panZoomHandlers}
-                onMouseDown={handleMouseDown}
-                onMouseMove={handleMouseMove}
-                onMouseUp={handleMouseUp}
-                onMouseLeave={handleMouseLeave}
-                className={`cursor-grab ${isDragging ? 'cursor-grabbing' : ''}`}
-            >
-                <GridDefs />
-                
-                <g transform="scale(1, -1)">
-                    <rect x={viewBox.x - 2000} y={viewBox.y - 2000} width={viewBox.width + 4000} height={viewBox.height + 4000} fill="url(#grid)" pointerEvents="none"/>
-                    <rect x="0" y="0" width={sheetW} height={sheetH} fill="#2d3748" fillOpacity="0.8" stroke="#4a5568" strokeWidth="2" vectorEffect="non-scaling-stroke"/>
-                    
-                    <g transform={`translate(0, 0)`}>
-                         <line x1="0" y1="0" x2="100" y2="0" stroke="lime" strokeWidth="2" vectorEffect="non-scaling-stroke"/>
-                         <line x1="0" y1="0" x2="0" y2="100" stroke="lime" strokeWidth="2" vectorEffect="non-scaling-stroke"/>
-                         <g transform="scale(1, -1)">
-                             <text x="10" y="-10" fill="lime" fontSize="20" fontWeight="bold">X</text>
-                             <text x="5" y="-80" fill="lime" fontSize="20" fontWeight="bold">Y</text>
-                         </g>
-                         <circle cx="0" cy="0" r="4" fill="lime" vectorEffect="non-scaling-stroke"/>
-                    </g>
-
-                    {activeNest.settings.clampPositions.map((cx, i) => (
-                        <g key={i} transform={`translate(${cx}, 0)`}>
-                            <rect x="-40" y="-50" width="80" height="50" fill="#a0aec0" stroke="#718096" strokeWidth="1" opacity="0.8" vectorEffect="non-scaling-stroke" />
-                            <rect x="-40" y="0" width="80" height="20" fill="#718096" vectorEffect="non-scaling-stroke" />
-                            <g transform="scale(1, -1)">
-                                <text x="0" y="20" textAnchor="middle" fill="#2d3748" fontSize="12" fontWeight="bold">{i+1}</text>
-                            </g>
-                        </g>
-                    ))}
-
-                    {placedParts.map(pp => {
-                        const part = parts.find(p => p.id === pp.partId);
-                        if(!part) return null;
-                        const isSelected = selectedNestPartId === pp.id;
-
-                        return (
-                            <g 
-                                key={pp.id} 
-                                transform={`translate(${pp.x} ${pp.y}) rotate(${pp.rotation})`}
-                                className={isSelected ? "opacity-100" : "opacity-90"}
-                            >
-                                <path 
-                                    d={part.geometry.path} 
-                                    fill={isSelected ? "#3182ce" : "#4a5568"} 
-                                    stroke={isSelected ? "#63b3ed" : "#a0aec0"} 
-                                    strokeWidth={isSelected ? 2 : 1} 
-                                    vectorEffect="non-scaling-stroke"
-                                />
-                                
-                                {part.punches.map(punch => {
-                                    const tool = tools.find(t => t.id === punch.toolId);
-                                    if (!tool) return null;
-                                    
-                                    // Simulation Coloring Logic using EXACT composite ID matching
-                                    // The ID is constructed as `${pp.id}_${punch.id}` in gcode.ts
-                                    let simStatus: 'pending' | 'active' | 'done' = 'pending';
-                                    
-                                    if (optimizedOperations) {
-                                        const currentCompositeId = `${pp.id}_${punch.id}`;
-                                        
-                                        const opIndex = optimizedOperations.findIndex(op => op.compositeId === currentCompositeId);
-                                        
-                                        if (opIndex !== -1) {
-                                            if (opIndex < simulationStep) simStatus = 'done';
-                                            else if (opIndex === simulationStep) simStatus = 'active';
-                                            else simStatus = 'pending';
-                                        }
-                                    }
-
-                                    return (
-                                        <g 
-                                            key={punch.id} 
-                                            transform={`translate(${punch.x}, ${punch.y}) rotate(${punch.rotation})`}
-                                        >
-                                            <g 
-                                                className={
-                                                    simStatus === 'done' ? '' : // Handled by style
-                                                    (simStatus === 'active' ? 'text-white drop-shadow-[0_0_5px_cyan] animate-pulse' : 
-                                                    (optimizedOperations ? 'text-gray-600' : 'text-[#f6e05e]'))
-                                                }
-                                                style={
-                                                    simStatus === 'done' 
-                                                        ? { fill: '#111827', stroke: '#374151', strokeWidth: 0.5 } // "Hole" look
-                                                        : (simStatus === 'active' ? { fill: 'cyan', stroke: 'white' } : {})
-                                                }
-                                            >
-                                                <ToolSvg tool={tool} />
-                                            </g>
-                                        </g>
-                                    )
-                                })}
-
-                                <g transform={`translate(${part.geometry.width / 2}, ${part.geometry.height / 2}) rotate(${-pp.rotation}) scale(1, -1)`}>
-                                    <text textAnchor="middle" dominantBaseline="middle" className="text-xs fill-white font-bold select-none pointer-events-none" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>
-                                        {part.name}
-                                    </text>
-                                </g>
-                                
-                                {isSelected && <rect x={-2} y={-2} width={part.geometry.width + 4} height={part.geometry.height + 4} fill="none" stroke="yellow" strokeWidth="2" strokeDasharray="4 2" vectorEffect="non-scaling-stroke"/>}
-                            </g>
-                        )
-                    })}
-                    
-                    {renderOptimizedPath()}
-                    {renderOptimizedHead()}
-                </g>
-            </svg>
-        );
-    }
-
     return (
         <main className="flex-1 bg-gray-800 flex flex-col relative">
             {mode === AppMode.PartEditor && (
@@ -542,47 +285,65 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
             
             <div className="flex-1 bg-grid-pattern p-4 overflow-auto relative">
                 <div className="w-full h-full bg-gray-900 border-2 border-dashed border-gray-600 rounded-lg flex items-center justify-center text-gray-500 overflow-hidden relative">
-                    {mode === AppMode.PartEditor && activePart && (
-                        <svg 
-                            ref={svgRef}
-                            width="100%" 
-                            height="100%" 
-                            viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
-                            preserveAspectRatio="xMidYMid meet"
-                            {...panZoomHandlers}
-                            onMouseDown={handleMouseDown}
-                            onMouseMove={handleMouseMove}
-                            onMouseUp={handleMouseUp}
-                            onMouseLeave={handleMouseLeave}
-                            onClick={(e) => { e.stopPropagation(); if(!teachMode && onSelectPunch) onSelectPunch(''); }}
-                            className={isDragging ? 'cursor-grabbing' : (manualPunchMode !== ManualPunchMode.Punch && !teachMode ? 'cursor-crosshair' : 'cursor-grab')}
-                        >
-                            <GridDefs />
-                            <g transform="scale(1, -1)">
-                                <rect x={viewBox.x - 2000} y={viewBox.y - 2000} width={viewBox.width + 4000} height={viewBox.height + 4000} fill="url(#grid)" pointerEvents="none"/>
-                                <path d={activePart.geometry.path} fill="rgba(31, 41, 55, 0.5)" stroke="#63b3ed" strokeWidth="2" vectorEffect="non-scaling-stroke" />
-                                {teachMode && renderTeachModeHighlights()}
-                                {activePart.punches.map(punch => {
-                                    const tool = tools.find(t => t.id === punch.toolId);
-                                    if(!tool) return null;
-                                    const isSelected = teachMode ? selectedTeachPunchIds.includes(punch.id) : punch.id === selectedPunchId;
-                                    const isGrouped = !!punch.lineId;
-                                    return (
-                                    <g key={punch.id} transform={`translate(${punch.x}, ${punch.y}) rotate(${punch.rotation})`} onClick={(e) => { e.stopPropagation(); onSelectPunch(punch.id); }} className="cursor-pointer">
-                                        {isSelected && <rect x={-tool.width/2-2} y={-tool.height/2-2} width={tool.width+4} height={tool.height+4} fill="none" stroke={teachMode ? "#ec4899" : "cyan"} strokeWidth="2" vectorEffect="non-scaling-stroke" />}
-                                        <path d="M -2 0 L 2 0 M 0 -2 L 0 2" stroke={isSelected ? (teachMode ? "#ec4899" : "cyan") : "red"} strokeWidth="0.5" vectorEffect="non-scaling-stroke"/>
-                                        <g opacity={isSelected ? 1 : 0.7}><ToolSvg tool={tool} /></g>
-                                        {isGrouped && isSelected && !teachMode && <circle r="2" fill="yellow" cy="-5"/>}
-                                    </g>
-                                    )
-                                })}
-                                {renderGhostGeometry()}
-                                {renderGhostTool()}
-                                {renderSelectionBox()}
-                            </g>
-                        </svg>
-                    )}
-                    {mode === AppMode.Nesting && activeNest && renderNestingSheet()}
+                    <svg 
+                        ref={svgRef}
+                        width="100%" 
+                        height="100%" 
+                        viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
+                        preserveAspectRatio="xMidYMid meet"
+                        {...panZoomHandlers}
+                        onMouseDown={handleMouseDown}
+                        onMouseMove={handleMouseMove}
+                        onMouseUp={handleMouseUp}
+                        onMouseLeave={handleMouseLeave}
+                        onClick={(e) => { e.stopPropagation(); if(!teachMode && onSelectPunch) onSelectPunch(''); }}
+                        className={isDragging ? 'cursor-grabbing' : (manualPunchMode !== ManualPunchMode.Punch && !teachMode && mode === AppMode.PartEditor ? 'cursor-crosshair' : 'cursor-grab')}
+                    >
+                        <GridDefs />
+                        <g transform="scale(1, -1)">
+                            <rect x={viewBox.x - 2000} y={viewBox.y - 2000} width={viewBox.width + 4000} height={viewBox.height + 4000} fill="url(#grid)" pointerEvents="none"/>
+                            
+                            {mode === AppMode.PartEditor && activePart && (
+                                <>
+                                    <PartEditorCanvas 
+                                        activePart={activePart}
+                                        processedGeometry={processedGeometry}
+                                        tools={tools}
+                                        mousePos={mousePos}
+                                        manualPunchMode={manualPunchMode}
+                                        punchCreationStep={punchCreationStep}
+                                        punchCreationPoints={punchCreationPoints}
+                                        selectedToolId={selectedToolId}
+                                        selectedPunchId={selectedPunchId}
+                                        placementReference={placementReference}
+                                        placementSide={placementSide}
+                                        punchOrientation={punchOrientation}
+                                        punchOffset={punchOffset}
+                                        snapMode={snapMode}
+                                        nibbleSettings={nibbleSettings}
+                                        teachMode={teachMode}
+                                        selectedSegmentIds={selectedSegmentIds}
+                                        selectedTeachPunchIds={selectedTeachPunchIds}
+                                        onSelectPunch={onSelectPunch}
+                                    />
+                                    {renderSelectionBox()}
+                                </>
+                            )}
+
+                            {mode === AppMode.Nesting && activeNest && (
+                                <NestingCanvas 
+                                    activeNest={activeNest}
+                                    currentNestSheet={currentNestSheet}
+                                    parts={parts}
+                                    tools={tools}
+                                    selectedNestPartId={selectedNestPartId}
+                                    optimizedOperations={optimizedOperations}
+                                    simulationStep={simulationStep}
+                                />
+                            )}
+                        </g>
+                    </svg>
+
                      {!activePart && mode === AppMode.PartEditor && <span>Загрузите DXF или выберите деталь из библиотеки</span>}
                      
                      <div className="absolute bottom-4 left-4 bg-gray-800/90 p-2 rounded shadow-lg backdrop-blur-sm border border-gray-600 z-10 pointer-events-none font-mono text-xs text-green-400">

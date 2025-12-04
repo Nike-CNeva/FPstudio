@@ -29,7 +29,8 @@ export const executeParametricScript = (
 ): Part => {
     
     const ops: DrawOp[] = [];
-    const punches: { toolId: string, x: number, y: number, rotation: number, lineId?: string }[] = [];
+    // Temporary storage for raw punches (before normalization)
+    const rawPunches: { toolId: string, x: number, y: number, rotation: number, lineId?: string }[] = [];
 
     const PartBuilder = {
         SetMaterial: (code: string, thickness: number) => {
@@ -58,7 +59,7 @@ export const executeParametricScript = (
             const lineId = `script_nibble_${generateId()}`;
 
             for (let i = 0; i <= count; i++) {
-                punches.push({
+                rawPunches.push({
                     toolId: tool.id,
                     x: x1 + dx * i,
                     y: y1 + dy * i,
@@ -70,12 +71,11 @@ export const executeParametricScript = (
         Strike: (toolPattern: string, x: number, y: number, angle: number) => {
             const tool = findToolByPattern(tools, toolPattern);
             if (!tool) return;
-            punches.push({ toolId: tool.id, x, y, rotation: angle });
+            rawPunches.push({ toolId: tool.id, x, y, rotation: angle });
         }
     };
 
     // Execute Script
-    // Safe-ish evaluation using new Function
     try {
         const generateFunc = new Function('Part', 'Length', 'Width', 'width', 'height', 'tools', 'Params', scriptCode);
         generateFunc(PartBuilder, targetWidth, targetHeight, targetWidth, targetHeight, tools, params);
@@ -87,7 +87,7 @@ export const executeParametricScript = (
         throw new Error("Скрипт не сгенерировал геометрию (Part.StartContour ...)");
     }
 
-    // --- 1. Calculate Bounding Box ---
+    // --- 1. Calculate Bounding Box of Generated Geometry ---
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     let curX = 0, curY = 0;
 
@@ -98,6 +98,7 @@ export const executeParametricScript = (
         if (y > maxY) maxY = y;
     };
 
+    // We must track current pen position to calculate arc bbox correctly
     ops.forEach(op => {
         if (op.type === 'move') {
             curX = op.x; curY = op.y;
@@ -112,38 +113,26 @@ export const executeParametricScript = (
             const { centerX, centerY, endX, endY, clockwise } = op;
             const r = Math.sqrt((curX - centerX)**2 + (curY - centerY)**2);
             
-            // Check cardinal points (0, 90, 180, 270)
-            // Angles in SVG coords (Y-Down): 
-            // 0 = Right, 90 = Down, 180 = Left, 270 (-90) = Up.
-            
             const startAng = Math.atan2(curY - centerY, curX - centerX);
             let endAng = Math.atan2(endY - centerY, endX - centerX);
             
             let start = startAng;
             let end = endAng;
 
-            // Normalize range for checking containment
             if (clockwise) {
-                // Visual CW (Y-Down) means angle INCREASES
                 if (end < start) end += Math.PI * 2;
             } else {
-                // Visual CCW (Y-Down) means angle DECREASES
                 if (end > start) end -= Math.PI * 2;
             }
 
-            // Check 4 cardinals: 0, PI/2, PI, 3PI/2 (and their periodic equivalents)
             const cardinals = [0, Math.PI/2, Math.PI, 3*Math.PI/2, 2*Math.PI, -Math.PI/2, -Math.PI];
             
             cardinals.forEach(ang => {
-                // Check if ang is between start and end
                 let within = false;
                 if (clockwise) {
-                    // increasing
                     if (ang > start && ang < end) within = true;
-                    // Check shifted by 2PI
                     if ((ang + 2*Math.PI) > start && (ang + 2*Math.PI) < end) within = true;
                 } else {
-                    // decreasing
                     if (ang < start && ang > end) within = true;
                     if ((ang - 2*Math.PI) < start && (ang - 2*Math.PI) > end) within = true;
                 }
@@ -166,39 +155,47 @@ export const executeParametricScript = (
     const actualWidth = maxX - minX;
     const actualHeight = maxY - minY;
 
-    // --- 2. Generate Path and Entities ---
+    // --- 2. Normalization Helpers ---
+    // Shift everything so minX, minY becomes 0, 0
+    const normX = (x: number) => x - minX;
+    const normY = (y: number) => y - minY;
+
+    // --- 3. Generate Path and Normalized Entities ---
     
     let path = "";
     const entities: DxfEntity[] = [];
     curX = 0; curY = 0;
 
-    // We assume the script generates coordinates relative to (0,0) being the top-left of the flat pattern
-    // or at least consistent. We use minX/minY to normalize if needed, but typically scripts start at 0.
-    // If minX is negative (e.g. chamfer start), we might want to shift?
-    // For now, we trust the script coordinates are what the user intends to see in the SVG.
-    // But for CAD entities, we must flip Y based on `actualHeight`.
-
+    // Restart traversal for generation with normalized coords
     ops.forEach(op => {
         if (op.type === 'move') {
-            path += `M ${op.x.toFixed(3)} ${op.y.toFixed(3)} `;
-            curX = op.x; curY = op.y;
+            const nx = normX(op.x);
+            const ny = normY(op.y);
+            path += `M ${nx.toFixed(3)} ${ny.toFixed(3)} `;
+            curX = nx; curY = ny;
         } else if (op.type === 'line') {
-            path += `L ${op.x.toFixed(3)} ${op.y.toFixed(3)} `;
+            const nx = normX(op.x);
+            const ny = normY(op.y);
+            path += `L ${nx.toFixed(3)} ${ny.toFixed(3)} `;
             
             entities.push({ 
                 type: 'LINE', 
-                start: { x: curX, y: actualHeight - curY }, 
-                end: { x: op.x, y: actualHeight - op.y } 
+                start: { x: curX, y: curY }, 
+                end: { x: nx, y: ny } 
             });
             
-            curX = op.x; curY = op.y;
+            curX = nx; curY = ny;
         } else if (op.type === 'arc') {
-            const { endX, endY, centerX, centerY, clockwise } = op;
-            const r = Math.sqrt((curX - centerX)**2 + (curY - centerY)**2);
+            const nx = normX(op.endX);
+            const ny = normY(op.endY);
+            const ncx = normX(op.centerX);
+            const ncy = normY(op.centerY);
+            const { clockwise } = op;
+
+            const r = Math.sqrt((curX - ncx)**2 + (curY - ncy)**2);
             
-            // SVG Params
-            const startA = Math.atan2(curY - centerY, curX - centerX);
-            const endA = Math.atan2(endY - centerY, endX - centerX);
+            const startA = Math.atan2(curY - ncy, curX - ncx);
+            const endA = Math.atan2(ny - ncy, nx - ncx);
             let diff = endA - startA;
             
             if (clockwise) {
@@ -208,50 +205,69 @@ export const executeParametricScript = (
             }
             
             const largeArc = Math.abs(diff) > Math.PI ? 1 : 0;
-            const sweep = clockwise ? 1 : 0; // SVG sweep: 1=CW (Positive angle direction in std math, but SVG Y-down logic applies) 
-            // Note: In SVG (Y-Down), Sweep=1 draws "Positive angle" direction relative to X axis? 
-            // Standard SVG: Sweep 1 is Clockwise. Sweep 0 is Counter-Clockwise.
+            const sweep = clockwise ? 1 : 0; 
             
-            path += `A ${r.toFixed(3)} ${r.toFixed(3)} 0 ${largeArc} ${sweep} ${endX.toFixed(3)} ${endY.toFixed(3)} `;
+            path += `A ${r.toFixed(3)} ${r.toFixed(3)} 0 ${largeArc} ${sweep} ${nx.toFixed(3)} ${ny.toFixed(3)} `;
             
-            // CAD Entity (Y-Up)
-            const cadStartY = actualHeight - curY;
-            const cadEndY = actualHeight - endY;
-            const cadCenterX = centerX;
-            const cadCenterY = actualHeight - centerY;
-            
-            const cadStartAng = Math.atan2(cadStartY - cadCenterY, curX - cadCenterX) * 180 / Math.PI;
-            const cadEndAng = Math.atan2(cadEndY - cadCenterY, endX - cadCenterX) * 180 / Math.PI;
+            // Standard CAD Angle (Counter-Clockwise)
+            // If SVG sweep=1 (CW visual, +Angle math), math holds.
+            const cadStartAng = startA * 180 / Math.PI;
+            const cadEndAng = endA * 180 / Math.PI;
+
+            // Note: If clockwise draw, start/end angles are physically correct relative to center
+            // but for Entity 'start' and 'end' usually imply CCW order. 
+            // DxfEntity ARC implies CCW traversal from startAngle to endAngle.
+            let eStart = cadStartAng;
+            let eEnd = cadEndAng;
+            if (!clockwise) {
+                // CCW Draw: Matches entity definition directly
+            } else {
+                // CW Draw: Entity should swap start/end to be represented as CCW arc 
+                // OR we accept that start->end is the visual arc.
+                // However, our DxfParser treats ARC as CCW.
+                // If we drew P1->P2 Clockwise, the entity is the "Long" way around if we strictly say start=P1.
+                // Actually, standard is: ARC entity goes CCW from start to end.
+                // If we drew P1->P2 CW, the CCW arc is P2->P1.
+                eStart = cadEndAng;
+                eEnd = cadStartAng;
+            }
 
             entities.push({
                 type: 'ARC',
-                center: { x: cadCenterX, y: cadCenterY },
+                center: { x: ncx, y: ncy },
                 radius: r,
-                startAngle: cadStartAng,
-                endAngle: cadEndAng
+                startAngle: eStart,
+                endAngle: eEnd
             });
 
-            curX = endX; curY = endY;
+            curX = nx; curY = ny;
         }
     });
 
     const finalPath = path + " Z";
-    const generatedPunches: PlacedTool[] = punches.map(p => ({ ...p, id: generateId() }));
+
+    // --- 4. Normalize Punches ---
+    const generatedPunches: PlacedTool[] = rawPunches.map(p => ({
+        ...p,
+        id: generateId(),
+        x: normX(p.x),
+        y: normY(p.y)
+    }));
 
     return {
         ...basePart,
         id: generateId(),
         name: `${basePart.name}_${targetWidth}x${targetHeight}`,
-        // Store User Input Dimensions for reference
         faceWidth: targetWidth,
         faceHeight: targetHeight,
-        // Store Actual Flat Pattern Dimensions for Geometry
+        // The Geometry is now fully normalized to (0,0) based on actual extents
         geometry: {
             path: finalPath,
             width: actualWidth,
             height: actualHeight,
             entities: entities,
-            bbox: { minX, minY, maxX, maxY }
+            // BBox is always 0-based for normalized geometry
+            bbox: { minX: 0, minY: 0, maxX: actualWidth, maxY: actualHeight }
         },
         punches: generatedPunches,
         script: scriptCode

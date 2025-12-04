@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
-import { ManualPunchMode, NibbleSettings, DestructSettings, PlacementReference, SnapMode, Part, PartMaterial, PlacedTool, Tool, ToolShape, PlacementSide, PartProfile } from '../../types';
-import { BoxIcon, SettingsIcon, TrashIcon, XIcon, SaveIcon, TrashIcon as TrashIconSmall } from '../Icons';
+import { ManualPunchMode, NibbleSettings, DestructSettings, SnapMode, Part, PartProfile, PlacedTool, Tool, ToolShape } from '../../types';
+import { BoxIcon, SettingsIcon, TrashIcon, XIcon, TrashIcon as TrashIconSmall } from '../Icons';
 import { InputField } from '../common/InputField';
 import { ToolSvg } from '../common/ToolDisplay';
 
@@ -50,17 +50,6 @@ export const NibbleSettingsPanel: React.FC<NibbleSettingsPanelProps> = ({ nibble
                 <InputField label="End Ext (e2)" type="number" value={nibbleSettings.extensionEnd} onChange={e => handleChange('extensionEnd', parseFloat(e.target.value) || 0)} />
             </div>
             <InputField label="Нахлест (v)" type="number" value={nibbleSettings.minOverlap} onChange={e => handleChange('minOverlap', parseFloat(e.target.value) || 0)} />
-             <div>
-                 <label className="text-xs text-gray-400">Точка удара</label>
-                 <div className="flex space-x-2 text-xs mt-1">
-                    <label className="flex items-center cursor-pointer">
-                        <input type="radio" checked={nibbleSettings.hitPointMode === 'offset'} onChange={() => handleChange('hitPointMode', 'offset')} className="mr-1" /> Offset
-                    </label>
-                    <label className="flex items-center cursor-pointer">
-                        <input type="radio" checked={nibbleSettings.hitPointMode === 'centerLine'} onChange={() => handleChange('hitPointMode', 'centerLine')} className="mr-1" /> Center Line
-                    </label>
-                 </div>
-            </div>
         </div>
     );
 };
@@ -95,28 +84,21 @@ interface ToolFace {
 }
 
 interface PlacementSettingsProps {
-    placementReference: PlacementReference;
-    setPlacementReference: (ref: PlacementReference) => void;
-    placementSide: PlacementSide;
-    setPlacementSide: (side: PlacementSide) => void;
     punchOrientation: number;
     setPunchOrientation: (angle: number) => void;
     onCyclePunchOrientation: () => void;
     selectedToolId: string | null;
     tools: Tool[];
-    punchOffset: number;
-    setPunchOffset: (offset: number) => void;
     manualPunchMode: ManualPunchMode;
     snapMode: SnapMode;
     setSnapMode: (mode: SnapMode) => void;
 }
 
 export const PlacementSettings: React.FC<PlacementSettingsProps> = ({ 
-    placementReference, setPlacementReference, placementSide, setPlacementSide, punchOrientation, setPunchOrientation, onCyclePunchOrientation, 
-    selectedToolId, tools, punchOffset, setPunchOffset, manualPunchMode, snapMode, setSnapMode 
+    punchOrientation, setPunchOrientation, onCyclePunchOrientation, 
+    selectedToolId, tools, manualPunchMode, snapMode, setSnapMode 
 }) => {
     const selectedTool = tools.find(t => t.id === selectedToolId);
-    const showEdgeControls = (placementReference === PlacementReference.Edge || manualPunchMode === ManualPunchMode.Nibble) && selectedTool;
     
     // Logic to extract faces from tool
     const getToolFaces = (tool: Tool): ToolFace[] => {
@@ -302,52 +284,24 @@ export const PlacementSettings: React.FC<PlacementSettingsProps> = ({
         <h3 className="font-bold mb-2 text-gray-300">Параметры вставки</h3>
         <div className="space-y-3">
             {manualPunchMode === ManualPunchMode.Punch && (
-                <>
-                    <div>
-                        <label className="text-xs text-gray-400 mb-1 block">Привязка к геометрии</label>
-                        <select 
-                            value={snapMode} 
-                            onChange={(e) => setSnapMode(e.target.value as SnapMode)}
-                            className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        >
-                            <option value={SnapMode.Off}>Отключено</option>
-                            <option value={SnapMode.Vertex}>Вершина</option>
-                            <option value={SnapMode.SegmentCenter}>Центр сегмента</option>
-                            <option value={SnapMode.ClosestPoint}>Ближайшая точка</option>
-                            <option value={SnapMode.ShapeCenter}>Центр фигуры</option>
-                        </select>
-                    </div>
-
-                    <div>
-                        <label className="text-xs text-gray-400">Режим размещения</label>
-                        <div className="flex space-x-1 items-center bg-gray-800 border border-gray-600 rounded-md p-1 text-sm">
-                            <button onClick={() => setPlacementReference(PlacementReference.Center)} className={`flex-1 p-1 rounded ${placementReference === PlacementReference.Center ? 'bg-blue-600' : 'hover:bg-gray-600'}`}>Центр</button>
-                            <button onClick={() => setPlacementReference(PlacementReference.Edge)} className={`flex-1 p-1 rounded ${placementReference === PlacementReference.Edge ? 'bg-blue-600' : 'hover:bg-gray-600'}`}>Край</button>
-                        </div>
-                    </div>
-                </>
+                <div>
+                    <label className="text-xs text-gray-400 mb-1 block">Привязка к геометрии</label>
+                    <select 
+                        value={snapMode} 
+                        onChange={(e) => setSnapMode(e.target.value as SnapMode)}
+                        className="w-full bg-gray-800 border border-gray-600 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                        <option value={SnapMode.Off}>Отключено</option>
+                        <option value={SnapMode.Vertex}>Вершина</option>
+                        <option value={SnapMode.SegmentCenter}>Центр сегмента</option>
+                        <option value={SnapMode.ClosestPoint}>Ближайшая точка</option>
+                        <option value={SnapMode.ShapeCenter}>Центр фигуры</option>
+                    </select>
+                </div>
             )}
             
-            {showEdgeControls && (
-                <>
-                    <InputField
-                        label={manualPunchMode === ManualPunchMode.Nibble ? "Смещение от линии (мм)" : "Смещение вдоль края (мм)"}
-                        type="number"
-                        value={punchOffset}
-                        onChange={e => setPunchOffset(parseFloat(e.target.value) || 0)}
-                    />
-                    
-                    <div className="mt-2">
-                        <label className="text-xs text-gray-400 mb-1 block">Сторона размещения</label>
-                        <div className="flex space-x-1 items-center bg-gray-800 border border-gray-600 rounded-md p-1 text-sm">
-                            <button onClick={() => setPlacementSide(PlacementSide.Outside)} className={`flex-1 p-1 rounded ${placementSide === PlacementSide.Outside ? 'bg-blue-600' : 'hover:bg-gray-600'}`}>Снаружи</button>
-                            <button onClick={() => setPlacementSide(PlacementSide.Inside)} className={`flex-1 p-1 rounded ${placementSide === PlacementSide.Inside ? 'bg-blue-600' : 'hover:bg-gray-600'}`}>Внутри</button>
-                        </div>
-                    </div>
-                </>
-            )}
-            
-            {showEdgeControls && renderOrientationPreview()}
+            {/* Edge/Offset controls hidden per request. Orientation/Face selection remains relevant for alignment. */}
+            {selectedTool && (manualPunchMode === ManualPunchMode.Punch || manualPunchMode === ManualPunchMode.Nibble) && renderOrientationPreview()}
         </div>
     </div>
     )
@@ -369,9 +323,10 @@ interface PlacedPunchesPanelProps {
     onSelectPunch: (id: string | null) => void;
     onDeletePunch: (id: string | string[]) => void;
     onUpdatePunch: (id: string, updates: Partial<PlacedTool>) => void;
+    onClearAll: () => void;
 }
 
-export const PlacedPunchesPanel: React.FC<PlacedPunchesPanelProps> = ({ activePart, tools, selectedPunchId, onSelectPunch, onDeletePunch, onUpdatePunch }) => {
+export const PlacedPunchesPanel: React.FC<PlacedPunchesPanelProps> = ({ activePart, tools, selectedPunchId, onSelectPunch, onDeletePunch, onUpdatePunch, onClearAll }) => {
     
     const groupedPunches: GroupedPunchItem[] = [];
     const processedLineIds = new Set<string>();
@@ -414,7 +369,19 @@ export const PlacedPunchesPanel: React.FC<PlacedPunchesPanelProps> = ({ activePa
     
     return (
         <div className="border-b border-gray-600 pb-3 mb-3">
-            <h3 className="font-bold text-gray-300 mb-2">Размещенный инструмент</h3>
+            <div className="flex justify-between items-center mb-2">
+                <h3 className="font-bold text-gray-300">Размещенный инструмент</h3>
+                <button 
+                    onClick={onClearAll} 
+                    disabled={!activePart || activePart.punches.length === 0}
+                    className="text-xs flex items-center space-x-1 bg-red-900/50 hover:bg-red-800 text-red-200 px-2 py-1 rounded border border-red-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Удалить все"
+                >
+                    <TrashIconSmall className="w-3 h-3"/>
+                    <span>Очистить</span>
+                </button>
+            </div>
+            
             <div className="bg-gray-800 rounded-md p-2 max-h-48 overflow-y-auto mb-3 space-y-1">
                 {groupedPunches.map(item => {
                     const isSelected = selectedPunchId && item.refIds.includes(selectedPunchId);

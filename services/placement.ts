@@ -170,26 +170,27 @@ export const calculateEdgePlacement = (
     const localContactY = bestFaceY;
 
     // 6. Transform Local Contact Vector to World Space
-    // The vector `v_R = (localContactX, localContactY)` is in the frame rotated by `toolOrientation`.
-    // We need to align this frame with the contour `snapAngle`.
-    // The transform from "Angle 0 Frame" to "World Contour Frame" is rotation by `snapAngle`.
     
+    // Adjust Lateral Offset (Y) based on Placement Side
+    // Inside (Material Side): Use Active Face as is (matches contour).
+    // Outside (Scrap Side): Flip the Y offset to align the opposite side of the tool.
+    // Note: We DO NOT flip X (Longitudinal), preserving direction along the line.
+    const lateralOffset = placementSide === PlacementSide.Inside ? localContactY : -localContactY;
+
     const snapRad = (snapAngle * Math.PI) / 180;
     const snapCos = Math.cos(snapRad);
     const snapSin = Math.sin(snapRad);
 
-    const worldContactVectorX = localContactX * snapCos - localContactY * snapSin;
-    const worldContactVectorY = localContactX * snapSin + localContactY * snapCos;
+    // Rotate the local contact vector (X, Y_adjusted) by the Snap Angle
+    const worldContactVectorX = localContactX * snapCos - lateralOffset * snapSin;
+    const worldContactVectorY = localContactX * snapSin + lateralOffset * snapCos;
 
     // 7. Calculate Tool Center
-    // If PlacementSide is Inside, we flip the center relative to the contact point.
-    // Outside (-1): Moves center AWAY from the Active Face Vector.
-    // Inside (1): Moves center TOWARDS the Active Face Vector.
-    
-    const sign = placementSide === PlacementSide.Inside ? 1 : -1;
-
-    const centerX = snapPoint.x + sign * worldContactVectorX;
-    const centerY = snapPoint.y + sign * worldContactVectorY;
+    // We always SUBTRACT the contact vector from the Snap Point.
+    // This moves the tool such that its contact point coincides with the snap point.
+    // Since we adjusted Lateral Offset above, this handles Inside/Outside placement correctly.
+    const centerX = snapPoint.x - worldContactVectorX;
+    const centerY = snapPoint.y - worldContactVectorY;
 
     // 8. Apply Parallel Offset
     // Offset is parallel to the contour tangent.
@@ -199,16 +200,8 @@ export const calculateEdgePlacement = (
     const finalX = centerX + parOffsetX;
     const finalY = centerY + parOffsetY;
 
-    // 9. Adjust Rotation for Inside Placement
-    // We rotate the tool 180 degrees so the active face (physically) aligns with the line 
-    // from the inside (opposite side).
-    let outputRotation = finalRotation;
-    if (placementSide === PlacementSide.Inside) {
-        outputRotation += 180;
-    }
-    
-    // Normalize
-    outputRotation = outputRotation % 360;
+    // 9. Normalize Rotation
+    let outputRotation = finalRotation % 360;
     if (outputRotation < 0) outputRotation += 360;
 
     return {

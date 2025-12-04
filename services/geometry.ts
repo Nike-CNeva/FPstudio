@@ -395,6 +395,85 @@ const polygonCenter = (vertices: Point[]): Point => {
     return { x: x / vertices.length, y: y / vertices.length };
 }
 
+// Helper: Identify closed loops from segment soup to find true shape centers (e.g. Oblongs)
+const findClosedLoops = (segments: Segment[]): { vertices: Point[], segmentIndices: number[] }[] => {
+    // 1. Build Adjacency Graph
+    const adj = new Map<string, number[]>();
+    const getKey = (p: Point) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`;
+
+    segments.forEach((s, i) => {
+        const k1 = getKey(s.p1);
+        const k2 = getKey(s.p2);
+        if (!adj.has(k1)) adj.set(k1, []);
+        if (!adj.has(k2)) adj.set(k2, []);
+        adj.get(k1)!.push(i);
+        adj.get(k2)!.push(i);
+    });
+
+    const visitedSegs = new Set<number>();
+    const loops: { vertices: Point[], segmentIndices: number[] }[] = [];
+
+    segments.forEach((seg, startIdx) => {
+        if (visitedSegs.has(startIdx)) return;
+
+        // Traverse connected component
+        const componentSegs = new Set<number>();
+        const q = [startIdx];
+        visitedSegs.add(startIdx);
+        componentSegs.add(startIdx);
+
+        while(q.length > 0) {
+            const currIdx = q.pop()!;
+            const s = segments[currIdx];
+            
+            [getKey(s.p1), getKey(s.p2)].forEach(k => {
+                const neighbors = adj.get(k) || [];
+                neighbors.forEach(nIdx => {
+                    if (!visitedSegs.has(nIdx)) {
+                        visitedSegs.add(nIdx);
+                        componentSegs.add(nIdx);
+                        q.push(nIdx);
+                    }
+                });
+            });
+        }
+
+        // Extract unique vertices from component
+        const uniquePoints = new Map<string, Point>();
+        const pointDegrees = new Map<string, number>();
+
+        componentSegs.forEach(idx => {
+            const s = segments[idx];
+            const k1 = getKey(s.p1);
+            const k2 = getKey(s.p2);
+            uniquePoints.set(k1, s.p1);
+            uniquePoints.set(k2, s.p2);
+            pointDegrees.set(k1, (pointDegrees.get(k1) || 0) + 1);
+            pointDegrees.set(k2, (pointDegrees.get(k2) || 0) + 1);
+        });
+
+        // Check closure: All vertices in a loop must have degree >= 2 (usually exactly 2)
+        let isClosed = true;
+        for(const deg of pointDegrees.values()) {
+            if (deg % 2 !== 0) {
+                isClosed = false;
+                break;
+            }
+        }
+
+        // A valid closed loop representing a shape (like oblong, rect) typically has > 2 vertices
+        // Standalone lines or single open arcs have 2 vertices.
+        if (isClosed && uniquePoints.size > 2) {
+            loops.push({
+                vertices: Array.from(uniquePoints.values()),
+                segmentIndices: Array.from(componentSegs)
+            });
+        }
+    });
+
+    return loops;
+};
+
 export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null => {
     const { entities, bbox } = part.geometry;
     if (!entities || !bbox) return null;
@@ -455,32 +534,56 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
         }
     });
     
-    const contours: { center: Point, area: number }[] = [];
+    // Calculate Centers for "Shape Center" snap
+    const shapeCenters: Point[] = [];
+
+    // 1. Exact Circles (Always useful)
     entities.forEach(entity => {
         if (entity.type === 'CIRCLE') {
-            contours.push({
-                center: normalize(entity.center, bbox),
-                area: Math.PI * entity.radius**2,
-            });
-        } else if (entity.type === 'LWPOLYLINE' && entity.closed && entity.vertices.length > 2) {
-            const normalizedVertices = entity.vertices.map(v => normalize(v, bbox));
-            contours.push({
-                center: polygonCenter(normalizedVertices),
-                area: polygonArea(normalizedVertices),
-            });
+            shapeCenters.push(normalize(entity.center, bbox));
         }
     });
 
-    const allShapeCenters = new Map<string, Point>();
-    contours.forEach(c => allShapeCenters.set(`${c.center.x.toFixed(3)},${c.center.y.toFixed(3)}`, c.center));
-    entities.forEach(entity => {
-        if (entity.type === 'ARC') {
-            const center = normalize(entity.center, bbox);
-            allShapeCenters.set(`${center.x.toFixed(3)},${center.y.toFixed(3)}`, center);
+    // 2. Closed Loops (Complex Shapes)
+    const detectedLoops = findClosedLoops(segments);
+    
+    // Identify Main Contour (Largest Area) vs Holes
+    let maxArea = -1;
+    let mainLoopIndex = -1;
+
+    detectedLoops.forEach((loop, idx) => {
+        const area = polygonArea(loop.vertices);
+        if (area > maxArea) {
+            maxArea = area;
+            mainLoopIndex = idx;
         }
     });
 
-    return { vertices, segments, bbox, holeCenters: Array.from(allShapeCenters.values()) };
+    const featureSegmentIndices = new Set<number>();
+
+    detectedLoops.forEach((loop, idx) => {
+        if (idx !== mainLoopIndex) {
+            // It is an internal hole (Feature). Add Centroid.
+            shapeCenters.push(polygonCenter(loop.vertices));
+            // Mark its segments so we don't add their individual arc centers (prevents confusion in oblongs)
+            loop.segmentIndices.forEach(si => featureSegmentIndices.add(si));
+        } else {
+            // It is the Main Contour. Do NOT add centroid (center of part is rarely useful for punching edges).
+            // We want the individual arc centers of the contour (Corner Radii).
+        }
+    });
+
+    // 3. Add Arc Centers for segments that are NOT part of internal features
+    // This catches: Main Contour arcs, Open Contours, Standalone Arcs.
+    segments.forEach((seg, idx) => {
+        if (seg.type === 'arc' && seg.center && !featureSegmentIndices.has(idx)) {
+            // Avoid duplicates with Circle centers added in step 1
+            const exists = shapeCenters.some(c => distanceSq(c, seg.center!) < 0.001);
+            if (!exists) shapeCenters.push(seg.center);
+        }
+    });
+
+    return { vertices, segments, bbox, holeCenters: shapeCenters };
 };
 
 export const findClosestSegment = (
