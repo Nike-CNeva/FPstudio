@@ -51,7 +51,19 @@ export const PartEditorCanvas: React.FC<PartEditorCanvasProps> = ({
         const r = seg.radius;
         const p1 = seg.p1;
         const p2 = seg.p2;
-        return `M ${p1.x} ${p1.y} A ${r} ${r} 0 0 0 ${p2.x} ${p2.y}`;
+        
+        let largeArc = 0;
+        const sweep = 1; // Default CCW in DXF->SVG coords
+        
+        // Use original entity to get accurate flags
+        if (seg.originalEntity && seg.originalEntity.type === 'ARC') {
+            const arc = seg.originalEntity;
+            let diff = arc.endAngle - arc.startAngle;
+            if (diff < 0) diff += 360;
+            largeArc = diff > 180 ? 1 : 0;
+        }
+
+        return `M ${p1.x} ${p1.y} A ${r} ${r} 0 ${largeArc} ${sweep} ${p2.x} ${p2.y}`;
     };
 
     const renderTeachModeHighlights = () => {

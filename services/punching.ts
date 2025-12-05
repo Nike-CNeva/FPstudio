@@ -1,7 +1,7 @@
 
-import { PartGeometry, PlacedTool, Tool, Point, NibbleSettings, DestructSettings, AutoPunchSettings, TurretLayout, ToolShape, DxfEntity, TeachCycle, Part } from '../types';
+import { PartGeometry, PlacedTool, Tool, Point, NibbleSettings, DestructSettings, AutoPunchSettings, TurretLayout, ToolShape, TeachCycle, Part } from '../types';
 import { generateId } from '../utils/helpers';
-import { isPointInsideContour, ProcessedGeometry, getGeometryFromEntities } from './geometry';
+import { isPointInsideContour, getGeometryFromEntities } from './geometry';
 import { findTeachCycleMatches } from './teachLogic';
 
 const degreesToRadians = (degrees: number) => degrees * (Math.PI / 180);
@@ -35,76 +35,6 @@ const calculateScallopStep = (toolRadius: number, scallopHeight: number): number
     if (term <= 0) return R * 0.5; 
     
     return 2 * Math.sqrt(term);
-};
-
-/**
- * Checks if a tool placement intrudes into the part material.
- * Returns true if the tool cuts into material (Bad).
- * Returns false if the tool is in waste/empty space (Good).
- */
-const isToolIntruding = (
-    tool: Tool,
-    x: number, // Center X (Normalized)
-    y: number, // Center Y (Normalized)
-    rotation: number,
-    partGeometry: PartGeometry
-): boolean => {
-    const { height, bbox } = partGeometry;
-    const rad = degreesToRadians(rotation);
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-
-    // Epsilon to prevent false positives on tangent boundaries.
-    // We check points slightly INSIDE the tool boundary.
-    // If these points are inside material, the tool is definitely intruding.
-    const EPSILON = 0.05; 
-    
-    const checkPoint = (localX: number, localY: number): boolean => {
-        // Rotate and translate to Normalized World
-        const wx = x + (localX * cos - localY * sin);
-        const wy = y + (localX * sin + localY * cos);
-        
-        // Denormalize to Raw DXF coords for geometry check
-        const rawP = denormalizePoint({ x: wx, y: wy }, height, bbox);
-        
-        // isPointInsideContour returns TRUE if point is in Material
-        return isPointInsideContour(rawP, partGeometry);
-    };
-
-    if (tool.shape === ToolShape.Circle) {
-        // For Circle: Check Center and 4 Cardinal points at Radius - Epsilon
-        if (checkPoint(0, 0)) return true;
-        const r = (tool.width / 2) - EPSILON;
-        // Check cardinal points relative to circle center (rotation doesn't strictly matter for circle, but good for consistency)
-        if (checkPoint(r, 0)) return true;
-        if (checkPoint(-r, 0)) return true;
-        if (checkPoint(0, r)) return true;
-        if (checkPoint(0, -r)) return true;
-
-    } else if (tool.shape === ToolShape.Oblong) {
-        // For Oblong: Check Center, Tips of caps, and Side midpoints
-        const checkW = Math.max(0, (tool.width / 2) - EPSILON);
-        const checkH = Math.max(0, (tool.height / 2) - EPSILON);
-
-        if (checkPoint(checkW, 0)) return true;
-        if (checkPoint(-checkW, 0)) return true;
-        if (checkPoint(0, checkH)) return true;
-        if (checkPoint(0, -checkH)) return true;
-        if (checkPoint(0, 0)) return true;
-
-    } else {
-        // For Rect/Square: Check Center and 4 Corners
-        const checkW = Math.max(0, (tool.width / 2) - EPSILON);
-        const checkH = Math.max(0, (tool.height / 2) - EPSILON);
-
-        if (checkPoint(checkW, checkH)) return true;
-        if (checkPoint(checkW, -checkH)) return true;
-        if (checkPoint(-checkW, checkH)) return true;
-        if (checkPoint(-checkW, -checkH)) return true;
-        if (checkPoint(0, 0)) return true;
-    }
-
-    return false;
 };
 
 /**
@@ -288,7 +218,9 @@ export const generateContourPunches = (
     const punches: Omit<PlacedTool, 'id'>[] = [];
     const coveredIndices = new Set<number>();
 
-    // 2. Teach Cycles
+    // 2. Teach Cycles Application
+    // We apply Teach Cycles FIRST. Any geometry segment (line/arc) that is matched by a cycle
+    // is added to `coveredIndices` and will be EXCLUDED from the standard auto-punching loop below.
     if (settings.useTeachCycles && teachCycles && teachCycles.length > 0) {
         const matches = findTeachCycleMatches(processed, teachCycles);
         matches.matches.forEach(p => punches.push(p));
@@ -304,13 +236,19 @@ export const generateContourPunches = (
         }
     }
 
-    // 4. Iterate Segments
-    processed.segments.forEach((seg, idx) => {
-        if (coveredIndices.has(idx)) return;
+    // 4. Iterate Segments (Standard Auto-Punch)
+    // Iterate explicitly to handle exclusion cleanly
+    for (let idx = 0; idx < processed.segments.length; idx++) {
+        const seg = processed.segments[idx];
+
+        // EXCLUSION LOGIC: If segment was handled by Teach Cycle, skip it entirely.
+        if (coveredIndices.has(idx)) {
+            continue;
+        }
 
         if (seg.type === 'line') {
             const candidates = getPreferredTools('line', 0, availableTools);
-            if (candidates.length === 0) return;
+            if (candidates.length === 0) continue;
             const tool = candidates[0];
 
             const dx = seg.p2.x - seg.p1.x;
@@ -357,12 +295,12 @@ export const generateContourPunches = (
 
         } else if (seg.type === 'arc') {
             const candidates = getPreferredTools('circle', 0, availableTools);
-            if (candidates.length === 0) return;
+            if (candidates.length === 0) continue;
             const tool = candidates[0];
             const r = seg.radius || 0;
             const center = seg.center || {x:0,y:0};
             
-            if (r <= 0) return;
+            if (r <= 0) continue;
 
             // Arc Nibbling
             const ang1 = Math.atan2(seg.p1.y - center.y, seg.p1.x - center.x);
@@ -387,7 +325,7 @@ export const generateContourPunches = (
             // If "outside" (R+) is NOT in material -> We punch "outside" (R+) -> Contour
             const punchRadius = isProbeInMaterial ? (r - tool.width/2) : (r + tool.width/2);
             
-            if (punchRadius <= 0) return; // Tool too big for hole
+            if (punchRadius <= 0) continue; // Tool too big for hole
 
             const stepLen = calculateScallopStep(tool.width/2, settings.scallopHeight);
             const angularStep = stepLen / punchRadius;
@@ -405,7 +343,7 @@ export const generateContourPunches = (
                 });
             }
         }
-    });
+    }
 
     return punches;
 };

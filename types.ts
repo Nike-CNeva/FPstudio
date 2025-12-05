@@ -1,3 +1,4 @@
+
 // FIX: Moved Point and DXF entity type definitions here to resolve circular dependencies.
 export interface Point {
   x: number;
@@ -315,6 +316,8 @@ export interface PatternSegment {
     // For arcs
     radius?: number; // Needed to distinguish arcs from lines
     sweepAngle?: number;
+    arcCenterLeft?: boolean; // True if center is to the Left of vector P1->P2 (CCW turn)
+    largeArc?: boolean; // True if arc spans > 180 degrees
 }
 
 export interface PatternPunch {
@@ -333,6 +336,7 @@ export interface TeachCycle {
     symmetry: CycleSymmetry;
     segments: PatternSegment[];
     punches: PatternPunch[];
+    baseAngle?: number; // Normalized absolute angle of the first segment (in radians)
 }
 
 export interface AutoPunchSettings {

@@ -263,7 +263,12 @@ export const ToolLibraryView: React.FC<{
     });
 
     const handleSelectTool = (tool: Tool) => {
-        setEditingTool(tool);
+        // Toggle selection logic: if clicking the same tool, deselect it
+        if (editingTool && 'id' in editingTool && editingTool.id === tool.id) {
+            setEditingTool(null);
+        } else {
+            setEditingTool(tool);
+        }
     };
 
     const handleAddNew = () => {
