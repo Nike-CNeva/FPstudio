@@ -299,6 +299,9 @@ export interface NibbleSettings {
   minOverlap: number;     // v
   hitPointMode: 'offset' | 'centerLine';
   toolPosition: 'long' | 'short';
+  // If set, overrides standard extension logic for micro-joints (negative extension)
+  isMicroJointStart?: boolean; 
+  isMicroJointEnd?: boolean;
 }
 
 export interface DestructSettings {

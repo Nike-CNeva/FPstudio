@@ -396,7 +396,7 @@ const polygonCenter = (vertices: Point[]): Point => {
 }
 
 // Helper: Identify closed loops from segment soup to find true shape centers (e.g. Oblongs)
-const findClosedLoops = (segments: Segment[]): { vertices: Point[], segmentIndices: number[] }[] => {
+export const findClosedLoops = (segments: Segment[]): { vertices: Point[], segmentIndices: number[] }[] => {
     // 1. Build Adjacency Graph
     const adj = new Map<string, number[]>();
     const getKey = (p: Point) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`;
@@ -472,6 +472,22 @@ const findClosedLoops = (segments: Segment[]): { vertices: Point[], segmentIndic
     });
 
     return loops;
+};
+
+export const getOuterLoopIndices = (segments: Segment[]): Set<number> => {
+    const loops = findClosedLoops(segments);
+    let maxArea = -1;
+    let indices: number[] = [];
+    
+    loops.forEach(l => {
+        const area = polygonArea(l.vertices);
+        if(area > maxArea) {
+            maxArea = area;
+            indices = l.segmentIndices;
+        }
+    });
+    
+    return new Set(indices);
 };
 
 export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null => {
