@@ -71,10 +71,30 @@ export const PartEditorCanvas: React.FC<PartEditorCanvasProps> = ({
         return processedGeometry.segments.map((seg, idx) => {
             const isSelected = selectedSegmentIds.includes(idx);
             let pathD = seg.type === 'line' ? `M ${seg.p1.x} ${seg.p1.y} L ${seg.p2.x} ${seg.p2.y}` : getArcPath(seg);
+            
+            if (isSelected) {
+                // Выбранный сегмент: Непрозрачный, два слоя
+                return (
+                    <g key={idx} className="cursor-pointer" onClick={(e) => e.stopPropagation()}>
+                        {/* Hit area */}
+                        <path d={pathD} stroke="transparent" strokeWidth="15" fill="none" vectorEffect="non-scaling-stroke"/>
+                        
+                        {/* Bottom Layer: Saturated Green (#22c55e), Thick */}
+                        <path d={pathD} stroke="#22c55e" strokeWidth="6" fill="none" vectorEffect="non-scaling-stroke" strokeLinecap="round" opacity="1" />
+                        
+                        {/* Top Layer: Black (#000000), Medium */}
+                        <path d={pathD} stroke="#000000" strokeWidth="2.5" fill="none" vectorEffect="non-scaling-stroke" strokeLinecap="round" />
+                    </g>
+                );
+            }
+
+            // Unselected segments - hover effect
             return (
-                <g key={idx} className="cursor-pointer group">
+                <g key={idx} className="cursor-pointer group" onClick={(e) => e.stopPropagation()}>
                     <path d={pathD} stroke="transparent" strokeWidth="10" fill="none" vectorEffect="non-scaling-stroke"/>
-                    <path d={pathD} stroke={isSelected ? "#ec4899" : "transparent"} strokeWidth="3" fill="none" vectorEffect="non-scaling-stroke" className={isSelected ? "" : "group-hover:stroke-purple-500/50"}/>
+                    
+                    {/* Hover: Bright Blue (#3b82f6) */}
+                    <path d={pathD} stroke="transparent" strokeWidth="4" fill="none" vectorEffect="non-scaling-stroke" className="group-hover:stroke-[#3b82f6] transition-colors duration-75" strokeLinecap="round"/>
                 </g>
             );
         });
@@ -100,13 +120,48 @@ export const PartEditorCanvas: React.FC<PartEditorCanvasProps> = ({
             {activePart.punches.map(punch => {
                 const tool = tools.find(t => t.id === punch.toolId);
                 if(!tool) return null;
+                
                 const isSelected = teachMode ? selectedTeachPunchIds.includes(punch.id) : punch.id === selectedPunchId;
                 const isGrouped = !!punch.lineId;
+                
+                // Tool Selection Style
+                let strokeColor = "cyan";
+                let strokeOp = 1.0;
+                
+                if (isSelected) {
+                    if (teachMode) {
+                        strokeColor = "#ec4899"; // Pink-500
+                        strokeOp = 0.5; // Semi-transparent
+                    } else {
+                        strokeColor = "cyan";
+                        strokeOp = 1.0;
+                    }
+                }
+
                 return (
                 <g key={punch.id} transform={`translate(${punch.x}, ${punch.y}) rotate(${punch.rotation})`} onClick={(e) => { e.stopPropagation(); onSelectPunch(punch.id); }} className="cursor-pointer">
-                    {isSelected && <rect x={-tool.width/2-2} y={-tool.height/2-2} width={tool.width+4} height={tool.height+4} fill="none" stroke={teachMode ? "#ec4899" : "cyan"} strokeWidth="2" vectorEffect="non-scaling-stroke" />}
-                    <path d="M -2 0 L 2 0 M 0 -2 L 0 2" stroke={isSelected ? (teachMode ? "#ec4899" : "cyan") : "red"} strokeWidth="0.5" vectorEffect="non-scaling-stroke"/>
+                    {/* Selection Box (Bottom Layer) */}
+                    {isSelected && (
+                        <rect 
+                            x={-tool.width/2-2} 
+                            y={-tool.height/2-2} 
+                            width={tool.width+4} 
+                            height={tool.height+4} 
+                            fill="none" 
+                            stroke={strokeColor} 
+                            strokeWidth="2" 
+                            strokeOpacity={strokeOp}
+                            vectorEffect="non-scaling-stroke" 
+                        />
+                    )}
+                    
+                    {/* Center Cross */}
+                    <path d="M -2 0 L 2 0 M 0 -2 L 0 2" stroke={isSelected ? strokeColor : "red"} strokeWidth="0.5" strokeOpacity={strokeOp} vectorEffect="non-scaling-stroke"/>
+                    
+                    {/* Tool Body */}
                     <g opacity={isSelected ? 1 : 0.7}><ToolSvg tool={tool} /></g>
+                    
+                    {/* Group Indicator */}
                     {isGrouped && isSelected && !teachMode && <circle r="2" fill="yellow" cy="-5"/>}
                 </g>
                 )

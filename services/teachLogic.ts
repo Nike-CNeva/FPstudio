@@ -1,7 +1,7 @@
 
 import { generateId } from '../utils/helpers';
 import { TeachCycle, Part, PlacedTool, Point, CycleSymmetry, PatternSegment, PatternPunch } from '../types';
-import { ProcessedGeometry } from './geometry';
+import { ProcessedGeometry, Segment } from './geometry';
 
 // ENABLE DEBUGGING HERE
 const DEBUG_TEACH = true;
@@ -38,8 +38,124 @@ const isCenterLeft = (a: Point, b: Point, c: Point): boolean => {
 };
 
 /**
+ * Checks if a punch is aligned with a line segment.
+ * Returns metadata about the alignment (longitudinal t-value and lateral distance).
+ * 
+ * @param maxLatDist Maximum lateral distance to consider "aligned" (handles tool offset)
+ */
+const isPunchAlignedWithSegment = (p: {x: number, y: number}, seg: Segment, maxLatDist: number = 50.0): { aligned: boolean, t: number, dist: number } => {
+    if (seg.type !== 'line') return { aligned: false, t: 0, dist: 0 };
+    
+    const dx = seg.p2.x - seg.p1.x;
+    const dy = seg.p2.y - seg.p1.y;
+    const l2 = dx*dx + dy*dy;
+    
+    if (l2 === 0) return { aligned: false, t: 0, dist: 0 };
+
+    // Projection parameter t (0 = p1, 1 = p2)
+    const t = ((p.x - seg.p1.x) * dx + (p.y - seg.p1.y) * dy) / l2;
+    
+    // Allow significant extension beyond line ends (e.g. for start/end nibbles)
+    // Range -0.5 to 1.5 allows extension up to 50% of line length on either side
+    if (t < -0.5 || t > 1.5) return { aligned: false, t, dist: 0 };
+
+    // Signed distance calculation (Cross product / Length)
+    const cross = dx * (p.y - seg.p1.y) - dy * (p.x - seg.p1.x);
+    const dist = cross / Math.sqrt(l2);
+
+    // Check lateral distance
+    if (Math.abs(dist) > maxLatDist) return { aligned: false, t, dist };
+
+    return { aligned: true, t, dist };
+};
+
+/**
+ * Groups punches based on their adherence to the specific contour segments involved in the match.
+ * Uses a "Best Fit" strategy: each punch is assigned to the closest valid segment, 
+ * ensuring that adjacent horizontal/vertical lines don't "steal" each other's punches.
+ */
+const groupPunchesByTopology = (
+    punches: Omit<PlacedTool, 'id'>[], 
+    matchedSegments: Segment[],
+    cycleName: string
+): Omit<PlacedTool, 'id'>[] => {
+    
+    // Map to store best segment assignment for each punch
+    // Key: Punch object reference
+    const assignments = new Map<Omit<PlacedTool, 'id'>, { segIdx: number, dist: number, signedOffset: number }>();
+    const MAX_LATERAL_DIST = 20.0; // Tighter tolerance to prevent cross-talk
+
+    // 1. Assign each punch to its closest aligned segment
+    punches.forEach(p => {
+        let bestSegIdx = -1;
+        let minAbsDist = Infinity;
+        let bestSignedOffset = 0;
+
+        matchedSegments.forEach((seg, sIdx) => {
+            if (seg.type !== 'line') return;
+
+            const res = isPunchAlignedWithSegment(p, seg, MAX_LATERAL_DIST);
+            if (res.aligned) {
+                const absDist = Math.abs(res.dist);
+                if (absDist < minAbsDist) {
+                    minAbsDist = absDist;
+                    bestSegIdx = sIdx;
+                    bestSignedOffset = res.dist;
+                }
+            }
+        });
+
+        if (bestSegIdx !== -1) {
+            assignments.set(p, { segIdx: bestSegIdx, dist: minAbsDist, signedOffset: bestSignedOffset });
+        }
+    });
+
+    // 2. Group punches by their assigned Segment
+    const segmentGroups = new Map<number, Omit<PlacedTool, 'id'>[]>();
+    assignments.forEach((info, p) => {
+        if (!segmentGroups.has(info.segIdx)) segmentGroups.set(info.segIdx, []);
+        segmentGroups.get(info.segIdx)!.push(p);
+    });
+
+    // 3. Process each segment group to create "Nibble Lines"
+    segmentGroups.forEach((groupPunches, segIdx) => {
+        const seg = matchedSegments[segIdx];
+        
+        // Sub-group by Tool, Rotation, and Lateral Offset
+        // This ensures separate lines for inner vs outer nibbling, or different tools on same line
+        const subGroups = new Map<string, Omit<PlacedTool, 'id'>[]>();
+
+        groupPunches.forEach(p => {
+            const info = assignments.get(p)!;
+            // Round offset to 0.1mm to group standard nibbles while separating distinct offsets
+            const offsetKey = Math.round(info.signedOffset * 10) / 10;
+            const rotKey = Math.round(p.rotation * 100) / 100;
+            const key = `${p.toolId}_${rotKey}_${offsetKey}`;
+            
+            if (!subGroups.has(key)) subGroups.set(key, []);
+            subGroups.get(key)!.push(p);
+        });
+
+        subGroups.forEach(subGroup => {
+            if (subGroup.length >= 2) {
+                // Sort by position along the line to ensure correct order
+                subGroup.sort((a, b) => distSq(a, seg.p1) - distSq(b, seg.p1));
+                
+                const lineId = `teach_${cycleName}_${generateId()}`;
+                subGroup.forEach(p => {
+                    p.lineId = lineId;
+                });
+            }
+        });
+    });
+
+    // Return modified punches (references updated with lineId)
+    return punches;
+};
+
+/**
  * Normalizes a selection of geometry and punches into a generic Pattern.
- * Automatically sorts and orients selected segments into a continuous chain.
+ * Automatically sorts and oients selected segments into a continuous chain.
  */
 export const createTeachCycleFromSelection = (
     name: string,
@@ -317,11 +433,6 @@ export const findTeachCycleMatches = (
             const startSeg = targetSegments[i];
 
             // Start Directions (Normal vs Reverse)
-            // Reverse detection is necessary for detecting mirrored shapes (flipped chirality) 
-            // and 180-degree rotated shapes in some contexts.
-            // If symmetry is 'none', strictly traversing forward on a specific feature (oriented) 
-            // might theoretically suffice, but to handle general matching robustly, checking both directions
-            // is safer, relying on the Angle Check (below) to filter out unwanted orientations.
             const startDirections = (cycle.symmetry !== 'none') ? [false, true] : [false, true];
 
             for (const startReverse of startDirections) {
@@ -490,6 +601,9 @@ export const findTeachCycleMatches = (
                     if (matchFound) {
                         debugLog(`MATCH FOUND! Segs: [${matchedIndices.join(', ')}]. Var: ${variant.name}, StartRev: ${startReverse}`);
                         
+                        // Collect raw punches for this instance
+                        const instanceRawPunches: Omit<PlacedTool, 'id'>[] = [];
+
                         variant.punches.forEach(p => {
                             const rx = p.relX * Math.cos(baseAngle) - p.relY * Math.sin(baseAngle);
                             const ry = p.relX * Math.sin(baseAngle) + p.relY * Math.cos(baseAngle);
@@ -497,14 +611,22 @@ export const findTeachCycleMatches = (
                             const wy = origin.y + ry;
                             const wr = p.relRotation + (baseAngle * 180 / Math.PI);
 
-                            resultPunches.push({
+                            instanceRawPunches.push({
                                 toolId: p.toolId,
                                 x: wx,
                                 y: wy,
-                                rotation: wr,
-                                lineId: `teach_${cycle.name}_${generateId()}`
+                                rotation: wr
                             });
                         });
+
+                        // Apply Topology-Aware Grouping
+                        const groupedInstance = groupPunchesByTopology(
+                            instanceRawPunches, 
+                            matchedIndices.map(i => targetSegments[i]), 
+                            cycle.name
+                        );
+                        
+                        resultPunches.push(...groupedInstance);
 
                         matchedIndices.forEach(idx => markCovered(idx));
                         break; 

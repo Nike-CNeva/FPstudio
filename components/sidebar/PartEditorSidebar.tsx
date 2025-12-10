@@ -33,6 +33,8 @@ interface PartEditorSidebarProps {
     onCyclePunchOrientation: () => void;
     snapMode: SnapMode;
     setSnapMode: (mode: SnapMode) => void;
+    punchOffset: number; 
+    setPunchOffset: (offset: number) => void;
     
     nibbleSettings: NibbleSettings;
     setNibbleSettings: (settings: NibbleSettings) => void;
@@ -58,7 +60,7 @@ export const PartEditorSidebar: React.FC<PartEditorSidebarProps> = ({
     manualPunchMode, setManualPunchMode, selectedToolId,
     selectedPunchId, setSelectedPunchId, onDeletePunch, onUpdatePunch, onClearAllPunches,
     punchOrientation, setPunchOrientation, onCyclePunchOrientation,
-    snapMode, setSnapMode, 
+    snapMode, setSnapMode, punchOffset, setPunchOffset,
     nibbleSettings, setNibbleSettings, destructSettings, setDestructSettings,
     onSavePartAsScript, onSavePartAsStatic, onUpdateActivePart, onClosePart,
     teachMode, setTeachMode, onSaveTeachCycle, teachCycles, onDeleteTeachCycle
@@ -134,6 +136,8 @@ export const PartEditorSidebar: React.FC<PartEditorSidebarProps> = ({
                                 manualPunchMode={manualPunchMode}
                                 snapMode={snapMode}
                                 setSnapMode={setSnapMode}
+                                punchOffset={punchOffset}
+                                setPunchOffset={setPunchOffset}
                             />
                         </>
                     )}

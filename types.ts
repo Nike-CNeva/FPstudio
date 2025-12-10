@@ -366,7 +366,7 @@ export interface AutoPunchSettings {
     
     // Micro-joints
     microJointsEnabled: boolean; // "Use external micro-joints"
-    microJointType: 'vertical' | 'horizontal' | 'all'; // New requirement
+    microJointType: 'vertical' | 'horizontal' | 'auto'; // Updated from 'all' to 'auto'
     microJointLength: number; // "Micro-joint length"
     microJointDistance: number; // "Maximum micro-joint distance"
 }

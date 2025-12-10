@@ -49,17 +49,69 @@ export const useManualPunch = ({
         switch(manualPunchMode) {
             case ManualPunchMode.Punch: {
                 if (snapMode === SnapMode.ShapeCenter) {
-                    onAddPunches([{ toolId: selectedTool.id, x: finalPoint.x, y: finalPoint.y, rotation: punchOrientation }]);
+                    let rotation = punchOrientation;
+                    
+                    // Smart Rotation: If feature dictates angle (forceRotation is hole angle, e.g., 90 for vertical oblong)
+                    if (snapResult?.forceRotation !== undefined) {
+                        const holeAngle = snapResult.forceRotation;
+                        
+                        // Default Tool Orientation: usually 0 is Horizontal (W > H).
+                        // If Tool is naturally W > H (Horizontal):
+                        //   Target Vertical Hole (90): We need rotation 90.
+                        //   Target Horizontal Hole (0): We need rotation 0.
+                        // If Tool is naturally H > W (Vertical):
+                        //   Target Vertical Hole (90): We need rotation 0 (stays vertical).
+                        //   Target Horizontal Hole (0): We need rotation 90.
+                        
+                        const isToolHorizontal = selectedTool.width >= selectedTool.height;
+                        
+                        if (isToolHorizontal) {
+                            rotation = holeAngle;
+                        } else {
+                            // Tool is naturally vertical.
+                            // If hole is 0 (Horz), we need 90 to make vertical tool horizontal.
+                            // If hole is 90 (Vert), we need 0 to keep vertical tool vertical.
+                            rotation = (holeAngle + 90) % 360;
+                        }
+                    }
+                    onAddPunches([{ toolId: selectedTool.id, x: finalPoint.x, y: finalPoint.y, rotation }]);
                     return;
                 }
                 
                 const placementAngle = snapResult?.angle ?? 0;
                 
-                // Using PlacementSide.Outside to ensure tool snaps to the outside of the contour (scrap side)
-                const finalPlacement = calculateEdgePlacement(
+                // Rigorous Outside Check: Calculate both Inside and Outside placements and pick the one truly in Scrap.
+                // 1. Calculate Candidate A (Outside Param)
+                const placementA = calculateEdgePlacement(
                     finalPoint, placementAngle, selectedTool, punchOrientation, punchOffset, 
                     snapResult?.snapTarget ?? 'middle', snapResult?.wasNormalized ?? false, PlacementSide.Outside
                 );
+                
+                // 2. Calculate Candidate B (Inside Param)
+                const placementB = calculateEdgePlacement(
+                    finalPoint, placementAngle, selectedTool, punchOrientation, punchOffset, 
+                    snapResult?.snapTarget ?? 'middle', snapResult?.wasNormalized ?? false, PlacementSide.Inside
+                );
+
+                let finalPlacement = placementA;
+
+                if (activePartProcessedGeometry && activePart) {
+                    const isInsideA = isPointInsideContour(placementA, activePart.geometry);
+                    const isInsideB = isPointInsideContour(placementB, activePart.geometry);
+                    
+                    // We want the tool to be in SCRAP (Outside of Contour).
+                    // isPointInsideContour returns TRUE if in Material.
+                    // So we want the one where isInside is FALSE.
+                    
+                    if (!isInsideA && isInsideB) {
+                        finalPlacement = placementA;
+                    } else if (isInsideA && !isInsideB) {
+                        finalPlacement = placementB;
+                    } else {
+                        // Fallback if both are outside or both inside: keep default Outside param (A)
+                        finalPlacement = placementA;
+                    }
+                }
 
                 onAddPunches([{ toolId: selectedTool.id, x: finalPlacement.x, y: finalPlacement.y, rotation: finalPlacement.rotation }]);
                 break;
@@ -86,6 +138,7 @@ export const useManualPunch = ({
                     const midX = (closestSeg.p1.x + closestSeg.p2.x) / 2;
                     const midY = (closestSeg.p1.y + closestSeg.p2.y) / 2;
 
+                    // Initial test point: Center of tool on Positive Normal side
                     const testP = { 
                         x: midX + nx * perpOffset, 
                         y: midY + ny * perpOffset 
@@ -93,13 +146,32 @@ export const useManualPunch = ({
                     
                     let finalOffsetSign = 1;
                     if (activePartProcessedGeometry) {
-                        const rawTestP = {
-                            x: testP.x + activePartProcessedGeometry.bbox.minX,
-                            y: activePartProcessedGeometry.bbox.minY + testP.y 
-                        };
+                        // Use the ACTUAL tool center relative to global coordinates for the Inside check.
+                        // isPointInsideContour uses global coordinates. 
+                        // bbox.minX/Y handles the translation from SVG (0,0 based) to Raw Dxf Coords if needed, 
+                        // but isPointInsideContour implementation expects point in same space as Geometry.
+                        // Our processedGeometry is usually normalized to (0,0). 
+                        // activePart.geometry.bbox has minX/minY = 0 if normalized.
+                        // However, to be safe, we denormalize if the original was shifted.
+                        // In this app, `activePart.geometry` entities are normalized to (0,0)-(W,H).
+                        // So `midX/midY` (from processedGeometry which is also normalized) are correct in that space.
                         
-                        if (isPointInsideContour(rawTestP, activePart.geometry)) {
+                        // We check the center.
+                        // If center is Inside (Material), we flip.
+                        if (isPointInsideContour(testP, activePart.geometry)) {
                             finalOffsetSign = -1;
+                        } else {
+                            // Double check: Is the flipped position inside?
+                            const flippedP = { x: midX - nx * perpOffset, y: midY - ny * perpOffset };
+                            if (!isPointInsideContour(flippedP, activePart.geometry)) {
+                                // Both centers are outside. This happens with thin gaps or concave shapes.
+                                // We stick to default +Normal unless...
+                                // Actually, for "Long tool exceeding line length", the problem is often 
+                                // that the simple probe point logic fails.
+                                // Here, using the exact tool center `testP` against the full polygon 
+                                // is the most robust way to find "Material".
+                                // If testP is NOT inside, we assume it's scrap (outside), so orientation is good.
+                            }
                         }
                     }
 
@@ -143,7 +215,7 @@ export const useManualPunch = ({
     return { 
         handleCanvasClick, 
         punchCreationStep, 
-        punchCreationPoints,
+        punchCreationPoints, 
         resetManualState,
         setPunchCreationPoints,
         setPunchCreationStep

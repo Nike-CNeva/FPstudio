@@ -113,13 +113,44 @@ export const useGhostPreview = ({
             const isShapeCenter = snapResult && snapMode === SnapMode.ShapeCenter;
 
             if (isShapeCenter) {
-                finalPlacement = { x: placementPoint.x, y: placementPoint.y, rotation: punchOrientation };
+                let rotation = punchOrientation;
+                if (snapResult?.forceRotation !== undefined) {
+                    const holeAngle = snapResult.forceRotation;
+                    const isToolHorizontal = selectedTool.width >= selectedTool.height;
+                    
+                    if (isToolHorizontal) {
+                        rotation = holeAngle;
+                    } else {
+                        rotation = (holeAngle + 90) % 360;
+                    }
+                }
+                finalPlacement = { x: placementPoint.x, y: placementPoint.y, rotation };
             } else {
                 const placementAngle = snapResult?.angle ?? 0;
-                finalPlacement = calculateEdgePlacement(
+                
+                const placementA = calculateEdgePlacement(
                     placementPoint, placementAngle, selectedTool, punchOrientation, punchOffset, 
                     snapResult?.snapTarget ?? 'middle', snapResult?.wasNormalized ?? false, PlacementSide.Outside
                 );
+                const placementB = calculateEdgePlacement(
+                    placementPoint, placementAngle, selectedTool, punchOrientation, punchOffset, 
+                    snapResult?.snapTarget ?? 'middle', snapResult?.wasNormalized ?? false, PlacementSide.Inside
+                );
+
+                finalPlacement = placementA;
+
+                if (processedGeometry && activePart) {
+                    const isInsideA = isPointInsideContour(placementA, activePart.geometry);
+                    const isInsideB = isPointInsideContour(placementB, activePart.geometry);
+                    
+                    if (!isInsideA && isInsideB) {
+                        finalPlacement = placementA;
+                    } else if (isInsideA && !isInsideB) {
+                        finalPlacement = placementB;
+                    } else {
+                        finalPlacement = placementA;
+                    }
+                }
             }
 
             return {

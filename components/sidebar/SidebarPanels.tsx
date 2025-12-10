@@ -92,11 +92,14 @@ interface PlacementSettingsProps {
     manualPunchMode: ManualPunchMode;
     snapMode: SnapMode;
     setSnapMode: (mode: SnapMode) => void;
+    punchOffset: number;
+    setPunchOffset: (offset: number) => void;
 }
 
 export const PlacementSettings: React.FC<PlacementSettingsProps> = ({ 
     punchOrientation, setPunchOrientation, onCyclePunchOrientation, 
-    selectedToolId, tools, manualPunchMode, snapMode, setSnapMode 
+    selectedToolId, tools, manualPunchMode, snapMode, setSnapMode,
+    punchOffset, setPunchOffset
 }) => {
     const selectedTool = tools.find(t => t.id === selectedToolId);
     
@@ -297,6 +300,17 @@ export const PlacementSettings: React.FC<PlacementSettingsProps> = ({
                         <option value={SnapMode.ClosestPoint}>Ближайшая точка</option>
                         <option value={SnapMode.ShapeCenter}>Центр фигуры</option>
                     </select>
+                    
+                    {snapMode === SnapMode.Vertex && (
+                        <div className="mt-2">
+                            <InputField 
+                                label="Смещение (мм)" 
+                                type="number" 
+                                value={punchOffset} 
+                                onChange={(e) => setPunchOffset(parseFloat(e.target.value) || 0)} 
+                            />
+                        </div>
+                    )}
                 </div>
             )}
             

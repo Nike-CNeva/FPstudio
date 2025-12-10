@@ -88,60 +88,31 @@ const rayIntersectsSegment = (p: Point, a: Point, b: Point): boolean => {
 
 // --- PRECISE INTERSECTION HELPERS ---
 
-/**
- * Checks if a line segment (P1-P2) intersects with a Circle (Center C, Radius R).
- * Returns true if segment enters the circle or touches it.
- */
 const segmentIntersectsCircle = (p1: Point, p2: Point, center: Point, r: number): boolean => {
-    // 1. Check if either endpoint is inside
     const d1 = (p1.x - center.x)**2 + (p1.y - center.y)**2;
     const d2 = (p2.x - center.x)**2 + (p2.y - center.y)**2;
     const r2 = r * r;
     if (d1 < r2 || d2 < r2) return true;
 
-    // 2. Project Center onto Line Segment
     const lx = p2.x - p1.x;
     const ly = p2.y - p1.y;
     const lenSq = lx * lx + ly * ly;
     
-    if (lenSq === 0) return false; // p1 == p2, already checked via d1
+    if (lenSq === 0) return false;
 
-    // dot product of (Center - P1) and (P2 - P1)
     const dot = ((center.x - p1.x) * lx + (center.y - p1.y) * ly) / lenSq;
-
-    // Closest point on infinite line
     const closestX = p1.x + dot * lx;
     const closestY = p1.y + dot * ly;
 
-    // Check if closest point is on the segment (dot must be between 0 and 1)
     if (dot < 0 || dot > 1) return false;
 
-    // Distance from closest point to center
     const distSq = (closestX - center.x)**2 + (closestY - center.y)**2;
-    
-    // Allow small epsilon for grazing (0.01)
     return distSq < (r2 - 0.0001); 
 };
 
-/**
- * Checks if a line segment intersects with an Arc.
- * Simplified: Checks if segment intersects the circle defined by the arc,
- * AND if intersection points are within angles.
- * Note: For simple occlusion checks, using full circle might be too aggressive, 
- * but safer for ensuring path is clear.
- * Optimized here to check angles.
- */
 const segmentIntersectsArc = (p1: Point, p2: Point, center: Point, r: number, startAngle: number, endAngle: number): boolean => {
-    // First, quick circle check
     if (!segmentIntersectsCircle(p1, p2, center, r)) return false;
 
-    // If it intersects circle, calculate intersection points and check angles
-    // Line: P = P1 + t(P2-P1). Circle: |P-C|^2 = R^2
-    // Substitute: |(P1-C) + t(P2-P1)|^2 = R^2
-    // let D = P1 - C,  V = P2 - P1.  |D + tV|^2 = R^2
-    // (D+tV).(D+tV) = D.D + 2t(D.V) + t^2(V.V) = R^2
-    // A*t^2 + B*t + C = 0
-    
     const dx = p1.x - center.x;
     const dy = p1.y - center.y;
     const vx = p2.x - p1.x;
@@ -153,7 +124,7 @@ const segmentIntersectsArc = (p1: Point, p2: Point, center: Point, r: number, st
     
     const det = B*B - 4*A*C;
     
-    if (det < 0) return false; // Should not happen given circle check passed
+    if (det < 0) return false;
     
     const sqrtDet = Math.sqrt(det);
     const t1 = (-B - sqrtDet) / (2*A);
@@ -182,18 +153,12 @@ const segmentIntersectsArc = (p1: Point, p2: Point, center: Point, r: number, st
     return false;
 };
 
-/**
- * Checks intersections between a specific line segment (p1-p2) and the part entities.
- * Used for Line-of-Sight checks.
- * REFACTORED: Uses precise mathematical checks instead of segmentation.
- */
 const segmentIntersectsGeometry = (p1: Point, p2: Point, entities: DxfEntity[]): boolean => {
     const minX = Math.min(p1.x, p2.x) - 0.1;
     const maxX = Math.max(p1.x, p2.x) + 0.1;
     const minY = Math.min(p1.y, p2.y) - 0.1;
     const maxY = Math.max(p1.y, p2.y) + 0.1;
 
-    // Helper for line-line intersection
     const checkLine = (a: Point, b: Point) => {
         const det = (p2.x - p1.x) * (b.y - a.y) - (p2.y - p1.y) * (b.x - a.x);
         if (det === 0) return false;
@@ -222,14 +187,12 @@ const segmentIntersectsGeometry = (p1: Point, p2: Point, entities: DxfEntity[]):
                 if (checkLine(v[v.length-1], v[0])) return true;
             }
         } else if (entity.type === 'ARC') {
-            // Bounding box pre-check
             if (entity.center.x + entity.radius < minX || entity.center.x - entity.radius > maxX || 
                 entity.center.y + entity.radius < minY || entity.center.y - entity.radius > maxY) continue;
 
             if (segmentIntersectsArc(p1, p2, entity.center, entity.radius, entity.startAngle, entity.endAngle)) return true;
 
         } else if (entity.type === 'CIRCLE') {
-             // Bounding box pre-check
             if (entity.center.x + entity.radius < minX || entity.center.x - entity.radius > maxX || 
                 entity.center.y + entity.radius < minY || entity.center.y - entity.radius > maxY) continue;
 
@@ -239,10 +202,6 @@ const segmentIntersectsGeometry = (p1: Point, p2: Point, entities: DxfEntity[]):
     return false;
 };
 
-/**
- * Checks if a point is inside a rectangle defined by position, dimensions and rotation.
- * Used for selecting placed parts in nesting.
- */
 export const isPointInRectangle = (
     point: Point, 
     rectX: number, 
@@ -269,6 +228,87 @@ export const getRotatedRectVertices = (x: number, y: number, w: number, h: numbe
         { x: x + w * cos - h * sin, y: y + w * sin + h * cos },
         { x: x - h * sin, y: y + h * cos }
     ];
+};
+
+export const getToolCorners = (tool: Tool, x: number, y: number, rotation: number): Point[] => {
+    const w = tool.width;
+    const h = tool.shape === ToolShape.Circle ? tool.width : tool.height;
+    
+    // Tool origin is center. Vertices relative to center.
+    const rad = rotation * (Math.PI / 180);
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    
+    const corners = [
+        { x: -w/2, y: -h/2 },
+        { x: w/2, y: -h/2 },
+        { x: w/2, y: h/2 },
+        { x: -w/2, y: h/2 }
+    ];
+    
+    return corners.map(p => ({
+        x: x + (p.x * cos - p.y * sin),
+        y: y + (p.x * sin + p.y * cos)
+    }));
+};
+
+/**
+ * Checks if a tool placed at (x,y) "gouges" into the part geometry.
+ * A gouge is defined as any of the tool's corners being strictly INSIDE the contour,
+ * UNLESS that corner is on the segment we are currently processing (touching allowed).
+ */
+export const isToolGouging = (
+    tool: Tool, 
+    x: number, 
+    y: number, 
+    rotation: number, 
+    geometry: PartGeometry, 
+    bbox: PartGeometry['bbox'],
+    currentSegment: Segment
+): boolean => {
+    if (!geometry || !bbox) return false;
+    
+    const corners = getToolCorners(tool, x, y, rotation);
+    const TOLERANCE = 0.5; // Allow minor overlap/touching
+    
+    // Denormalize helper for geometry check
+    const denorm = (p: Point) => ({ x: p.x + bbox.minX, y: p.y + bbox.minY });
+
+    for (const corner of corners) {
+        const rawCorner = denorm(corner);
+        
+        // 1. Is the corner inside the material?
+        if (isPointInsideContour(rawCorner, geometry)) {
+            // 2. It is inside. Is it just touching the current segment?
+            // Calculate distance to current segment.
+            let dist = 0;
+            const { p1, p2 } = currentSegment;
+            const rawP1 = denorm(p1);
+            const rawP2 = denorm(p2);
+
+            if (currentSegment.type === 'line') {
+                const l2 = (rawP2.x - rawP1.x)**2 + (rawP2.y - rawP1.y)**2;
+                if (l2 === 0) dist = Math.sqrt((rawCorner.x - rawP1.x)**2 + (rawCorner.y - rawP1.y)**2);
+                else {
+                    let t = ((rawCorner.x - rawP1.x) * (rawP2.x - rawP1.x) + (rawCorner.y - rawP1.y) * (rawP2.y - rawP1.y)) / l2;
+                    t = Math.max(0, Math.min(1, t));
+                    const projX = rawP1.x + t * (rawP2.x - rawP1.x);
+                    const projY = rawP1.y + t * (rawP2.y - rawP1.y);
+                    dist = Math.sqrt((rawCorner.x - projX)**2 + (rawCorner.y - projY)**2);
+                }
+            } else if (currentSegment.type === 'arc' && currentSegment.radius && currentSegment.center) {
+                const rawCenter = denorm(currentSegment.center);
+                const distToCenter = Math.sqrt((rawCorner.x - rawCenter.x)**2 + (rawCorner.y - rawCenter.y)**2);
+                dist = Math.abs(distToCenter - currentSegment.radius);
+            }
+
+            // If distance > Tolerance, it's a real gouge into NEIGHBORING material
+            if (dist > TOLERANCE) {
+                return true;
+            }
+        }
+    }
+    return false;
 };
 
 export const calculatePartPhysicalExtents = (part: Part, tools: Tool[]): { width: number, height: number, offsetX: number, offsetY: number } => {
@@ -358,7 +398,7 @@ export type ProcessedGeometry = {
     vertices: Point[], 
     segments: Segment[], 
     bbox: PartGeometry['bbox'],
-    holeCenters: Point[],
+    holeCenters: { point: Point, rotation?: number }[],
 };
 export type SnapTarget = 'start' | 'end' | 'middle';
 export interface SnapResult {
@@ -366,6 +406,7 @@ export interface SnapResult {
     angle: number;
     snapTarget: SnapTarget;
     wasNormalized: boolean;
+    forceRotation?: number; // Rotation implied by shape (e.g. 90deg for vertical oblong)
 }
 
 const distanceSq = (p1: Point, p2: Point) => (p1.x - p2.x)**2 + (p1.y - p2.y)**2;
@@ -395,9 +436,8 @@ const polygonCenter = (vertices: Point[]): Point => {
     return { x: x / vertices.length, y: y / vertices.length };
 }
 
-// Helper: Identify closed loops from segment soup to find true shape centers (e.g. Oblongs)
+// Helper: Identify closed loops from segment soup
 export const findClosedLoops = (segments: Segment[]): { vertices: Point[], segmentIndices: number[] }[] => {
-    // 1. Build Adjacency Graph
     const adj = new Map<string, number[]>();
     const getKey = (p: Point) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`;
 
@@ -416,7 +456,6 @@ export const findClosedLoops = (segments: Segment[]): { vertices: Point[], segme
     segments.forEach((seg, startIdx) => {
         if (visitedSegs.has(startIdx)) return;
 
-        // Traverse connected component
         const componentSegs = new Set<number>();
         const q = [startIdx];
         visitedSegs.add(startIdx);
@@ -438,7 +477,6 @@ export const findClosedLoops = (segments: Segment[]): { vertices: Point[], segme
             });
         }
 
-        // Extract unique vertices from component
         const uniquePoints = new Map<string, Point>();
         const pointDegrees = new Map<string, number>();
 
@@ -452,7 +490,6 @@ export const findClosedLoops = (segments: Segment[]): { vertices: Point[], segme
             pointDegrees.set(k2, (pointDegrees.get(k2) || 0) + 1);
         });
 
-        // Check closure: All vertices in a loop must have degree >= 2 (usually exactly 2)
         let isClosed = true;
         for(const deg of pointDegrees.values()) {
             if (deg % 2 !== 0) {
@@ -461,8 +498,6 @@ export const findClosedLoops = (segments: Segment[]): { vertices: Point[], segme
             }
         }
 
-        // A valid closed loop representing a shape (like oblong, rect) typically has > 2 vertices
-        // Standalone lines or single open arcs have 2 vertices.
         if (isClosed && uniquePoints.size > 2) {
             loops.push({
                 vertices: Array.from(uniquePoints.values()),
@@ -550,20 +585,17 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
         }
     });
     
-    // Calculate Centers for "Shape Center" snap
-    const shapeCenters: Point[] = [];
+    const shapeCenters: { point: Point, rotation?: number }[] = [];
 
-    // 1. Exact Circles (Always useful)
+    // 1. Exact Circles
     entities.forEach(entity => {
         if (entity.type === 'CIRCLE') {
-            shapeCenters.push(normalize(entity.center, bbox));
+            shapeCenters.push({ point: normalize(entity.center, bbox), rotation: 0 });
         }
     });
 
     // 2. Closed Loops (Complex Shapes)
     const detectedLoops = findClosedLoops(segments);
-    
-    // Identify Main Contour (Largest Area) vs Holes
     let maxArea = -1;
     let mainLoopIndex = -1;
 
@@ -579,23 +611,26 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
 
     detectedLoops.forEach((loop, idx) => {
         if (idx !== mainLoopIndex) {
-            // It is an internal hole (Feature). Add Centroid.
-            shapeCenters.push(polygonCenter(loop.vertices));
-            // Mark its segments so we don't add their individual arc centers (prevents confusion in oblongs)
+            // Determine orientation based on bounding box aspect ratio of the hole
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            loop.vertices.forEach(v => {
+                if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+                if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
+            });
+            const w = maxX - minX;
+            const h = maxY - minY;
+            const rotation = h > w ? 90 : 0; // Vertical hole = 90
+
+            shapeCenters.push({ point: polygonCenter(loop.vertices), rotation });
             loop.segmentIndices.forEach(si => featureSegmentIndices.add(si));
-        } else {
-            // It is the Main Contour. Do NOT add centroid (center of part is rarely useful for punching edges).
-            // We want the individual arc centers of the contour (Corner Radii).
         }
     });
 
-    // 3. Add Arc Centers for segments that are NOT part of internal features
-    // This catches: Main Contour arcs, Open Contours, Standalone Arcs.
+    // 3. Add Arc Centers for others
     segments.forEach((seg, idx) => {
         if (seg.type === 'arc' && seg.center && !featureSegmentIndices.has(idx)) {
-            // Avoid duplicates with Circle centers added in step 1
-            const exists = shapeCenters.some(c => distanceSq(c, seg.center!) < 0.001);
-            if (!exists) shapeCenters.push(seg.center);
+            const exists = shapeCenters.some(c => distanceSq(c.point, seg.center!) < 0.001);
+            if (!exists) shapeCenters.push({ point: seg.center, rotation: 0 });
         }
     });
 
@@ -661,13 +696,19 @@ export const findSnapPoint = (
     
     if (mode === SnapMode.ShapeCenter) {
         if (!holeCenters || holeCenters.length === 0) return null;
-        let closestCenter: Point | null = null;
+        let closestCenter: { point: Point, rotation?: number } | null = null;
         let closestDistSq = Infinity;
         holeCenters.forEach(center => {
-            const dSq = distanceSq(mousePoint, center);
+            const dSq = distanceSq(mousePoint, center.point);
             if (dSq < closestDistSq) { closestDistSq = dSq; closestCenter = center; }
         });
-        if (closestCenter) return { point: closestCenter, angle: 0, snapTarget: 'middle', wasNormalized: false };
+        if (closestCenter) return { 
+            point: closestCenter.point, 
+            angle: 0, 
+            snapTarget: 'middle', 
+            wasNormalized: false, 
+            forceRotation: closestCenter.rotation 
+        };
         return null;
     }
     

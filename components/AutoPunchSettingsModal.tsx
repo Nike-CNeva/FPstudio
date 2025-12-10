@@ -26,7 +26,7 @@ export const AutoPunchSettingsModal: React.FC<{
         toleranceRectWidth: 2.5,
 
         microJointsEnabled: false,
-        microJointType: 'all',
+        microJointType: 'auto',
         microJointLength: 1.5,
         microJointDistance: 0, // Hidden/Unused
     });
@@ -158,8 +158,8 @@ export const AutoPunchSettingsModal: React.FC<{
                             <div className="space-y-2">
                                 <span className="text-xs text-gray-400 block mb-1">Ориентация</span>
                                 <label className="flex items-center space-x-2 cursor-pointer">
-                                    <input type="radio" checked={settings.microJointType === 'all'} onChange={() => setSettings(s=>({...s, microJointType: 'all'}))} className="form-radio h-4 w-4 text-blue-600 bg-gray-700 border-gray-500" />
-                                    <span className="text-sm text-gray-300">Все стороны</span>
+                                    <input type="radio" checked={settings.microJointType === 'auto'} onChange={() => setSettings(s=>({...s, microJointType: 'auto'}))} className="form-radio h-4 w-4 text-blue-600 bg-gray-700 border-gray-500" />
+                                    <span className="text-sm text-gray-300">Авто-подбор (4 угла)</span>
                                 </label>
                                 <label className="flex items-center space-x-2 cursor-pointer">
                                     <input type="radio" checked={settings.microJointType === 'vertical'} onChange={() => setSettings(s=>({...s, microJointType: 'vertical'}))} className="form-radio h-4 w-4 text-blue-600 bg-gray-700 border-gray-500" />

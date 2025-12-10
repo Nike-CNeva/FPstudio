@@ -93,6 +93,8 @@ export const Sidebar: React.FC<SidebarProps> = (props) => {
                     onCyclePunchOrientation={props.onCyclePunchOrientation}
                     snapMode={props.snapMode}
                     setSnapMode={props.setSnapMode}
+                    punchOffset={props.punchOffset}
+                    setPunchOffset={props.setPunchOffset}
                     nibbleSettings={props.nibbleSettings}
                     setNibbleSettings={props.setNibbleSettings}
                     destructSettings={props.destructSettings}
