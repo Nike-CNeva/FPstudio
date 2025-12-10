@@ -61,6 +61,32 @@ const isPunchOnSegment = (p: Omit<PlacedTool, 'id'>, seg: Segment, tools: Tool[]
     return false;
 };
 
+// --- HELPER: VECTOR CALCULATION FOR VERTEX ANGLE ---
+const getVectorFromVertex = (seg: Segment, v: Point): {x:number, y:number} => {
+    // Basic chord vector
+    const other = (Math.abs(seg.p1.x - v.x) < 0.001 && Math.abs(seg.p1.y - v.y) < 0.001) ? seg.p2 : seg.p1;
+    let vec = { x: other.x - v.x, y: other.y - v.y };
+    
+    // Refine for Arc
+    if (seg.type === 'arc' && seg.center) {
+        // We want the tangent vector at v.
+        // Normal N = v - center
+        const nx = v.x - seg.center.x;
+        const ny = v.y - seg.center.y;
+        // Tangent candidates: T1(-ny, nx), T2(ny, -nx)
+        const t1 = { x: -ny, y: nx };
+        // const t2 = { x: ny, y: -nx };
+        
+        // Pick the one that aligns somewhat with the chord vector (points towards other end)
+        // Dot product with chord should be positive
+        const dot1 = t1.x * vec.x + t1.y * vec.y;
+        if (dot1 > 0) return t1;
+        return { x: ny, y: -nx };
+    }
+    
+    return vec;
+};
+
 // --- SEGMENT HANDLERS ---
 
 const processLineSegment = (
@@ -68,46 +94,167 @@ const processLineSegment = (
     geometry: PartGeometry,
     tools: Tool[], 
     settings: AutoPunchSettings,
-    extension: { start: number, end: number },
-    punches: Omit<PlacedTool, 'id'>[]
+    punches: Omit<PlacedTool, 'id'>[],
+    allSegments: Segment[],
+    neighbors: { start: Segment | undefined, end: Segment | undefined },
+    jointVertices: Set<string>
 ) => {
     const dx = seg.p2.x - seg.p1.x;
     const dy = seg.p2.y - seg.p1.y;
     const len = Math.sqrt(dx*dx + dy*dy);
     
-    const candidates = getPreferredTools('line', len, 0, tools);
-    if (candidates.length === 0) return;
-    const tool = candidates[0];
+    // --- SMART EXTENSION & TOLERANCE LOGIC ---
+    // Calculate required range BEFORE tool selection
+    const { bbox } = geometry;
 
-    const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+    const isExtreme = (p: Point): boolean => {
+        return Math.abs(p.x - bbox.minX) < TOLERANCE.GEO ||
+               Math.abs(p.x - bbox.maxX) < TOLERANCE.GEO ||
+               Math.abs(p.y - bbox.minY) < TOLERANCE.GEO ||
+               Math.abs(p.y - bbox.maxY) < TOLERANCE.GEO;
+    };
 
-    let perpOffset = (tool.shape === ToolShape.Circle ? tool.width : tool.height) / 2;
-    // Basic orientation logic for rectangular tools on angled lines
-    if (tool.shape !== ToolShape.Circle) {
-        // If we want tool along the line, rotation = angle. 
-        // Then width is along line, height is perp.
-        perpOffset = tool.height / 2;
-    }
+    const getExtRange = (vertex: Point, dir: {x: number, y: number}, neighbor: Segment | undefined): { min: number, max: number } => {
+        // Priority 1: Micro-Joints
+        if (jointVertices.has(getPointKey(vertex))) {
+            const val = -settings.microJointLength;
+            return { min: val, max: val };
+        }
+
+        const extreme = isExtreme(vertex);
+
+        // Priority 2: Neighbor is Arc -> Fixed Extension
+        if (neighbor && neighbor.type === 'arc') {
+            return { min: settings.extension, max: settings.extension };
+        }
+
+        // Priority 3: Internal Corner
+        const PROBE_DIST = 0.1;
+        const probe = { x: vertex.x + dir.x * PROBE_DIST, y: vertex.y + dir.y * PROBE_DIST };
+        const isInternal = isPointInsideContour(probe, geometry);
+
+        if (isInternal) {
+            return { min: 0, max: 0 };
+        } 
+        
+        // Priority 4: External Corner
+        if (extreme) {
+            return { min: settings.extension, max: settings.extension };
+        } else {
+            // Cutout inside sheet -> Allow huge range up to Vertex Tolerance
+            const tolerance = Math.max(settings.extension, settings.vertexTolerance);
+            return { min: settings.extension, max: tolerance };
+        }
+    };
 
     const ux = dx/len; const uy = dy/len;
-    const nx = -uy; const ny = ux;
+    const startRange = getExtRange(seg.p1, { x: -ux, y: -uy }, neighbors.start);
+    const endRange = getExtRange(seg.p2, { x: ux, y: uy }, neighbors.end);
+
+    const minReqLen = len + startRange.min + endRange.min;
+    const maxAllowedLen = len + startRange.max + endRange.max;
+
+    // --- TOOL SELECTION STRATEGY ---
+    // 1. First, explicitly check if ANY tool fits as a "Single Hit".
+    //    We prioritize this over "best fit for nibbling".
     
+    let tool: Tool | undefined;
+    let isSingleHit = false;
+    
+    // Filter candidates that physically fit the single hit slot
+    const singleHitCandidates = tools.filter(t => {
+        // Only consider straight-edge tools
+        if (![ToolShape.Rectangle, ToolShape.Square, ToolShape.Oblong].includes(t.shape)) return false;
+        
+        // Check primary dimension (Width)
+        // Note: We assume standard 0-rotation alignment for simplicity in auto-tooling lines.
+        // A smarter check would allow 90-degree rotation if height matches, but keeping it consistent with nibble logic.
+        const size = t.width; 
+        
+        // Allow tiny float margin
+        return size >= (minReqLen - 0.01) && size <= (maxAllowedLen + 0.01);
+    });
+
+    if (singleHitCandidates.length > 0) {
+        // Sort candidates:
+        // 1. Shape Priority (Rect > Square > Oblong)
+        // 2. Size (Smallest adequate size is better to minimize waste/overlap, 
+        //    even though tolerance allows bigger)
+        singleHitCandidates.sort((a, b) => {
+            const getScore = (t: Tool) => {
+                let s = 0;
+                if (t.shape === ToolShape.Rectangle) s = 10;
+                else if (t.shape === ToolShape.Square) s = 5;
+                else if (t.shape === ToolShape.Oblong) s = 0;
+                return s;
+            };
+            const sA = getScore(a);
+            const sB = getScore(b);
+            if (sA !== sB) return sB - sA; // Higher score first
+            return a.width - b.width; // Smaller width first (closer to minReq)
+        });
+
+        tool = singleHitCandidates[0];
+        isSingleHit = true;
+    } else {
+        // Fallback: Use standard nibbling selection (closest to line length)
+        const candidates = getPreferredTools('line', len, 0, tools);
+        if (candidates.length > 0) {
+            tool = candidates[0];
+            isSingleHit = false;
+        }
+    }
+
+    if (!tool) return;
+
+    // --- CALCULATE PLACEMENT ---
+    const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+    const nx = -uy; const ny = ux;
+
+    let perpOffset = (tool.shape === ToolShape.Circle ? tool.width : tool.height) / 2;
+    if (tool.shape !== ToolShape.Circle) {
+        perpOffset = tool.height / 2;
+    }
+    
+    // Check material side
     const midX = (seg.p1.x + seg.p2.x)/2;
     const midY = (seg.p1.y + seg.p2.y)/2;
-    
     const testP = { x: midX + nx * perpOffset * 1.1, y: midY + ny * perpOffset * 1.1 };
-    const rawTestP = denormalizePoint(testP, geometry.bbox);
-    
-    const isInside = isPointInsideContour(rawTestP, geometry);
+    const isInside = isPointInsideContour(testP, geometry);
     const sign = isInside ? -1 : 1;
-    
+
+    let activeStartExt = startRange.min;
+    let activeEndExt = endRange.min;
+
+    if (isSingleHit) {
+        // Calculate centered extension for single hit
+        const toolLength = tool.width;
+        
+        // We need:
+        // startRange.min <= extStart <= startRange.max
+        // endRange.min <= extEnd <= endRange.max
+        // extStart + extEnd + len = toolLength  => extEnd = toolLength - len - extStart
+        
+        // Constraint intersection:
+        const validMin = Math.max(startRange.min, toolLength - len - endRange.max);
+        const validMax = Math.min(startRange.max, toolLength - len - endRange.min);
+        
+        // Prefer standard extension if valid, else mid-point, else min
+        if (settings.extension >= validMin && settings.extension <= validMax) {
+            activeStartExt = settings.extension;
+        } else {
+            activeStartExt = validMin;
+        }
+        activeEndExt = toolLength - len - activeStartExt;
+    }
+
     const segmentPunches = generateNibblePunches(
         seg.p1, 
         seg.p2, 
         tool, 
         {
-            extensionStart: extension.start,
-            extensionEnd: extension.end,
+            extensionStart: activeStartExt,
+            extensionEnd: activeEndExt,
             minOverlap: settings.overlap,
             hitPointMode: 'offset',
             toolPosition: 'long'
@@ -119,19 +266,10 @@ const processLineSegment = (
     );
 
     // --- GOUGE CHECK AND CORRECTION ---
-    // If any punch intersects neighboring segments, shift it along the line.
     
     const lineVector = { x: ux, y: uy };
     const SHIFT_STEP = 1.0; 
-    const MAX_SHIFT = 20.0; // Limit shifting to avoid infinite loops or excessive moves
-
-    // Sort punches by distance from start to handle ordered shifting
-    const startPoint = seg.p1;
-    segmentPunches.sort((a, b) => {
-        const da = (a.x - startPoint.x)**2 + (a.y - startPoint.y)**2;
-        const db = (b.x - startPoint.x)**2 + (b.y - startPoint.y)**2;
-        return da - db;
-    });
+    const MAX_SHIFT = 20.0; 
 
     const safePunches: typeof segmentPunches = [];
 
@@ -139,7 +277,7 @@ const processLineSegment = (
         let currentX = p.x;
         let currentY = p.y;
         let shiftAccumulated = 0;
-        let isGouging = isToolGouging(tool, currentX, currentY, p.rotation, geometry, geometry.bbox, seg);
+        let isGouging = isToolGouging(tool!, currentX, currentY, p.rotation, geometry, geometry.bbox, seg, allSegments);
         
         // 1. Try removing extension if gouging at ends
         if (isGouging) {
@@ -147,51 +285,39 @@ const processLineSegment = (
             let zeroExtY = currentY;
             let canTryZeroExt = false;
 
-            // Check if this is a "Start" punch influenced by extension.start
-            // Typically the first punch in the sorted list
-            if (index === 0 && extension.start > 0) {
-                // Determine direction: Extension moves OUT from P1. 
-                // To remove it, we move IN towards P2 (along ux, uy).
-                // generateNibblePunches logic: startX = p1.x - ux * extensionStart;
-                // We want to simulate startX = p1.x (so add ux * extensionStart)
-                zeroExtX += lineVector.x * extension.start;
-                zeroExtY += lineVector.y * extension.start;
+            if (index === 0 && activeStartExt > 0) {
+                zeroExtX += lineVector.x * activeStartExt;
+                zeroExtY += lineVector.y * activeStartExt;
                 canTryZeroExt = true;
             } 
-            // Check if this is an "End" punch influenced by extension.end
-            else if (index === segmentPunches.length - 1 && extension.end > 0) {
-                // Extension moves OUT from P2. 
-                // To remove it, we move IN towards P1 (negative ux, uy).
-                zeroExtX -= lineVector.x * extension.end;
-                zeroExtY -= lineVector.y * extension.end;
+            else if (index === segmentPunches.length - 1 && activeEndExt > 0) {
+                zeroExtX -= lineVector.x * activeEndExt;
+                zeroExtY -= lineVector.y * activeEndExt;
                 canTryZeroExt = true;
             }
 
             if (canTryZeroExt) {
-                // Check if the zero-extension position is safe
-                const isZeroExtGouging = isToolGouging(tool, zeroExtX, zeroExtY, p.rotation, geometry, geometry.bbox, seg);
+                const isZeroExtGouging = isToolGouging(tool!, zeroExtX, zeroExtY, p.rotation, geometry, geometry.bbox, seg, allSegments);
                 if (!isZeroExtGouging) {
                     currentX = zeroExtX;
                     currentY = zeroExtY;
-                    isGouging = false; // Fixed by removing extension
+                    isGouging = false;
                 }
             }
         }
 
-        // 2. Determine shift direction if still gouging
-        // Ideally, if it's closer to Start, shift towards End.
-        // If closer to End, shift towards Start.
-        const distFromStart = Math.sqrt((currentX - seg.p1.x)**2 + (currentY - seg.p1.y)**2);
-        const shiftDir = distFromStart < (len / 2) ? 1 : -1; // 1 = Towards End, -1 = Towards Start
+        // 2. Fallback Shift Loop
+        if (isGouging) {
+            const distFromStart = Math.sqrt((currentX - seg.p1.x)**2 + (currentY - seg.p1.y)**2);
+            const shiftDir = distFromStart < (len / 2) ? 1 : -1; 
 
-        // 3. Fallback Shift Loop
-        while (isGouging && shiftAccumulated < MAX_SHIFT) {
-            // Apply shift
-            currentX += lineVector.x * SHIFT_STEP * shiftDir;
-            currentY += lineVector.y * SHIFT_STEP * shiftDir;
-            shiftAccumulated += SHIFT_STEP;
-            
-            isGouging = isToolGouging(tool, currentX, currentY, p.rotation, geometry, geometry.bbox, seg);
+            while (isGouging && shiftAccumulated < MAX_SHIFT) {
+                currentX += lineVector.x * SHIFT_STEP * shiftDir;
+                currentY += lineVector.y * SHIFT_STEP * shiftDir;
+                shiftAccumulated += SHIFT_STEP;
+                
+                isGouging = isToolGouging(tool!, currentX, currentY, p.rotation, geometry, geometry.bbox, seg, allSegments);
+            }
         }
 
         if (!isGouging) {
@@ -209,7 +335,8 @@ const processArcSegment = (
     settings: AutoPunchSettings,
     jointVertices: Set<string>,
     punches: Omit<PlacedTool, 'id'>[],
-    placedSingleHits: Set<string>
+    placedSingleHits: Set<string>,
+    allSegments: Segment[]
 ) => {
     const r = seg.radius || 0;
     const center = seg.center || {x:0,y:0};
@@ -302,12 +429,9 @@ const processArcSegment = (
         let py = center.y + punchRadius * Math.sin(a);
         
         // --- ARC GOUGE CHECK ---
-        // Simplified shift: rotate angle slightly inwards if gouging
-        let isGouging = isToolGouging(tool, px, py, 0, geometry, geometry.bbox, seg);
+        let isGouging = isToolGouging(tool, px, py, 0, geometry, geometry.bbox, seg, allSegments);
         
         if (isGouging) {
-            // Try shifting angle slightly towards center of arc
-            // Direction depends on 'i' (start vs end)
             const shiftDir = i < (adjustedSteps / 2) ? 1 : -1; // Towards middle
             const SHIFT_ANG = 0.05; // radians
             const MAX_SHIFTS = 10;
@@ -317,7 +441,7 @@ const processArcSegment = (
                 currentA += (diff > 0 ? SHIFT_ANG : -SHIFT_ANG) * shiftDir;
                 const tx = center.x + punchRadius * Math.cos(currentA);
                 const ty = center.y + punchRadius * Math.sin(currentA);
-                if (!isToolGouging(tool, tx, ty, 0, geometry, geometry.bbox, seg)) {
+                if (!isToolGouging(tool, tx, ty, 0, geometry, geometry.bbox, seg, allSegments)) {
                     px = tx; py = ty; isGouging = false;
                     break;
                 }
@@ -353,7 +477,6 @@ export const generateContourPunches = (
     const placedSingleHits = new Set<string>();
 
     // 2. Build Topology Map (Vertex -> Segment Indices)
-    // This is used for Micro-Joint strategy and conflict resolution
     const vertexMap = new Map<string, { point: Point, segmentIndices: number[] }>();
     processed.segments.forEach((seg, idx) => {
         [seg.p1, seg.p2].forEach(p => {
@@ -366,7 +489,7 @@ export const generateContourPunches = (
     // 3. Identify Outer Contour Indices
     const outerLoopIndices = getOuterLoopIndices(processed.segments);
 
-    // 4. Topology-Aware Micro-Joints Classification
+    // 4. Micro-Joints Classification (Topology-Aware)
     const jointVertices = new Set<string>();
     const { minX, minY, maxX, maxY } = processed.bbox;
 
@@ -376,19 +499,9 @@ export const generateContourPunches = (
             Math.abs((axis === 'x' ? p.x : p.y) - val) < TOLERANCE.GEO;
 
         if (settings.microJointType === 'auto') {
-            // AUTO STRATEGY: Prioritize stable corners (longer arms) near BB corners
             const distSq = (p1: Point, p2: Point) => (p1.x - p2.x)**2 + (p1.y - p2.y)**2;
-            
-            const cornerTargets = [
-                { x: minX, y: maxY }, // TL
-                { x: maxX, y: maxY }, // TR
-                { x: maxX, y: minY }, // BR
-                { x: minX, y: minY }  // BL
-            ];
-
-            const isPointOnAnyLimit = (p: Point) => 
-                isPointOnLimit(p, 'x', minX) || isPointOnLimit(p, 'x', maxX) ||
-                isPointOnLimit(p, 'y', minY) || isPointOnLimit(p, 'y', maxY);
+            const cornerTargets = [{ x: minX, y: maxY }, { x: maxX, y: maxY }, { x: maxX, y: minY }, { x: minX, y: minY }];
+            const isPointOnAnyLimit = (p: Point) => isPointOnLimit(p, 'x', minX) || isPointOnLimit(p, 'x', maxX) || isPointOnLimit(p, 'y', minY) || isPointOnLimit(p, 'y', maxY);
 
             cornerTargets.forEach(target => {
                 let bestScore = -Infinity;
@@ -396,42 +509,49 @@ export const generateContourPunches = (
 
                 vertexMap.forEach((data, key) => {
                     const dist = Math.sqrt(distSq(data.point, target));
-                    
-                    // Priority 1: Check for Line segments (Nibbling requirement)
                     const hasLine = data.segmentIndices.some(i => processed.segments[i].type === 'line');
-                    const typePenalty = hasLine ? 0 : 1000; // Large penalty if corner consists only of arcs
-
-                    // Priority 2: Stability (Length of the shortest leg)
-                    // Helper to get stability score
+                    const typePenalty = hasLine ? 0 : 1000; 
                     let minLen = Infinity;
+                    
                     data.segmentIndices.forEach(idx => {
                         const s = processed.segments[idx];
                         const len = Math.sqrt(distSq(s.p1, s.p2));
                         if (len < minLen) minLen = len;
                     });
-                    const stability = minLen === Infinity ? 0 : minLen;
-
-                    // Composite Score:
-                    // Maximize Stability, Minimize Distance.
-                    const onLimitBonus = isPointOnAnyLimit(data.point) ? 5.0 : 0;
-                    const score = stability - (dist * 0.5) + onLimitBonus - typePenalty;
-
-                    if (score > bestScore) {
-                        bestScore = score;
-                        bestKey = key;
+                    
+                    // --- 90 Degree Priority Check ---
+                    let angleBonus = 0;
+                    if (data.segmentIndices.length === 2) {
+                        const s1 = processed.segments[data.segmentIndices[0]];
+                        const s2 = processed.segments[data.segmentIndices[1]];
+                        const v1 = getVectorFromVertex(s1, data.point);
+                        const v2 = getVectorFromVertex(s2, data.point);
+                        const mag1 = Math.sqrt(v1.x*v1.x + v1.y*v1.y);
+                        const mag2 = Math.sqrt(v2.x*v2.x + v2.y*v2.y);
+                        
+                        if (mag1 > 0 && mag2 > 0) {
+                            const dot = v1.x * v2.x + v1.y * v2.y;
+                            const angRad = Math.acos(Math.max(-1, Math.min(1, dot / (mag1 * mag2))));
+                            const angDeg = angRad * 180 / Math.PI;
+                            // Check for 90 degrees with tolerance
+                            if (Math.abs(angDeg - 90) < 5.0) {
+                                angleBonus = 1000; // Huge bonus to override distance
+                            }
+                        }
                     }
-                });
 
-                if (bestKey) {
-                    jointVertices.add(bestKey);
-                }
+                    const stability = minLen === Infinity ? 0 : minLen;
+                    const onLimitBonus = isPointOnAnyLimit(data.point) ? 5.0 : 0;
+                    
+                    const score = stability - (dist * 0.5) + onLimitBonus - typePenalty + angleBonus;
+
+                    if (score > bestScore) { bestScore = score; bestKey = key; }
+                });
+                if (bestKey) jointVertices.add(bestKey);
             });
 
         } else if (settings.microJointType === 'vertical') {
-            // VERTICAL STRATEGY
-            const leftPoints: Point[] = [];
-            const rightPoints: Point[] = [];
-
+            const leftPoints: Point[] = []; const rightPoints: Point[] = [];
             outerLoopIndices.forEach(idx => {
                 const s = processed.segments[idx];
                 [s.p1, s.p2].forEach(p => {
@@ -439,27 +559,16 @@ export const generateContourPunches = (
                     if (isPointOnLimit(p, 'x', maxX)) rightPoints.push(p);
                 });
             });
-
             const addExtremes = (points: Point[]) => {
                 if (points.length === 0) return;
-                let minYPoint = points[0];
-                let maxYPoint = points[0];
-                points.forEach(p => {
-                    if (p.y < minYPoint.y) minYPoint = p;
-                    if (p.y > maxYPoint.y) maxYPoint = p;
-                });
-                jointVertices.add(getPointKey(minYPoint));
-                jointVertices.add(getPointKey(maxYPoint));
+                let minYPoint = points[0]; let maxYPoint = points[0];
+                points.forEach(p => { if (p.y < minYPoint.y) minYPoint = p; if (p.y > maxYPoint.y) maxYPoint = p; });
+                jointVertices.add(getPointKey(minYPoint)); jointVertices.add(getPointKey(maxYPoint));
             };
-
-            addExtremes(leftPoints);
-            addExtremes(rightPoints);
+            addExtremes(leftPoints); addExtremes(rightPoints);
 
         } else if (settings.microJointType === 'horizontal') {
-            // HORIZONTAL STRATEGY
-            const bottomPoints: Point[] = [];
-            const topPoints: Point[] = [];
-
+            const bottomPoints: Point[] = []; const topPoints: Point[] = [];
             outerLoopIndices.forEach(idx => {
                 const s = processed.segments[idx];
                 [s.p1, s.p2].forEach(p => {
@@ -467,21 +576,13 @@ export const generateContourPunches = (
                     if (isPointOnLimit(p, 'y', maxY)) topPoints.push(p);
                 });
             });
-
             const addExtremes = (points: Point[]) => {
                 if (points.length === 0) return;
-                let minXPoint = points[0];
-                let maxXPoint = points[0];
-                points.forEach(p => {
-                    if (p.x < minXPoint.x) minXPoint = p;
-                    if (p.x > maxXPoint.x) maxXPoint = p;
-                });
-                jointVertices.add(getPointKey(minXPoint));
-                jointVertices.add(getPointKey(maxXPoint));
+                let minXPoint = points[0]; let maxXPoint = points[0];
+                points.forEach(p => { if (p.x < minXPoint.x) minXPoint = p; if (p.x > maxXPoint.x) maxXPoint = p; });
+                jointVertices.add(getPointKey(minXPoint)); jointVertices.add(getPointKey(maxXPoint));
             };
-
-            addExtremes(bottomPoints);
-            addExtremes(topPoints);
+            addExtremes(bottomPoints); addExtremes(topPoints);
         }
     }
 
@@ -492,19 +593,10 @@ export const generateContourPunches = (
         matches.coveredSegmentIndices.forEach(i => coveredIndices.add(i));
     }
 
-    // 5.5. OVERRIDE: Micro-Joint Priority (SMART CONFLICT RESOLUTION)
-    // If we have Teach Cycle punches that conflict with Micro-Joint locations:
-    // 1. Identify punches near micro-joints.
-    // 2. If punch is part of a Nibble Group (lineId), remove entire group.
-    // 3. If punch is single, remove closest punch.
-    // 4. Force RE-PROCESSING of affected segments by removing them from coveredIndices.
+    // 5.5. OVERRIDE: Micro-Joint Priority
     if (settings.microJointsEnabled && jointVertices.size > 0 && punches.length > 0) {
-        
-        const punchesToDelete = new Set<string>(); // Keep track by reference/ID not ideal as IDs are generated. Use object ref.
         const linesToDelete = new Set<string>();
         const segmentsToUncover = new Set<number>();
-
-        // Pre-parse joint points for distance check
         const jointPoints = Array.from(jointVertices).map(k => {
             const [x, y] = k.split(',').map(parseFloat);
             return { x, y, key: k };
@@ -512,84 +604,37 @@ export const generateContourPunches = (
 
         punches.forEach(p => {
             const tool = tools.find(t => t.id === p.toolId);
-            // Default radius 5 if unknown
             const toolRadius = tool ? Math.max(tool.width, tool.height) / 2 : 5;
-            
-            // Safety margin: Joint Length + Tool Radius
             const safeDistance = settings.microJointLength + toolRadius;
             const safeDistSq = safeDistance * safeDistance;
 
             for (const jp of jointPoints) {
                 const dSq = (p.x - jp.x)**2 + (p.y - jp.y)**2;
                 if (dSq < safeDistSq) {
-                    // Conflict detected!
-                    
-                    // Logic: Is it a group or single?
-                    if (p.lineId) {
-                        linesToDelete.add(p.lineId);
-                    } else {
-                        // Mark specific punch for deletion
-                        // Since `punches` items don't have stable IDs yet (generateId called in loop usually),
-                        // we can't rely on `p.id` if it was generated inside `findTeachCycleMatches` but not assigned uniquely?
-                        // `findTeachCycleMatches` returns Omit<PlacedTool, 'id'>? No, wait. 
-                        // It returns objects. We can use object reference if we filter carefully, 
-                        // but adding a temp ID or using reference is better.
-                        // Actually `punches` here is `Omit<PlacedTool, 'id'>[]`.
-                        // We will use object reference in a Set.
-                        // However, to simplify, let's just assume we can filter by reference.
-                        // Or add a temp ID. 
-                    }
-
-                    // Mark segments connected to this vertex for Auto-Processing
+                    if (p.lineId) linesToDelete.add(p.lineId);
                     const connectedSegs = vertexMap.get(jp.key)?.segmentIndices || [];
                     connectedSegs.forEach(idx => segmentsToUncover.add(idx));
                 }
             }
         });
 
-        // Second pass: Filter punches
         const keptPunches: typeof punches = [];
-        
-        // We need to re-run the distance check to filter specific single punches, 
-        // OR rely on the set logic. 
-        // Let's re-run distance check during filter for singles, and check lineID for groups.
-        
         for (const p of punches) {
-            // Check Group Removal
-            if (p.lineId && linesToDelete.has(p.lineId)) {
-                continue; // Skip (Remove)
-            }
-
-            // Check Single Removal
+            if (p.lineId && linesToDelete.has(p.lineId)) continue;
             let keepSingle = true;
             if (!p.lineId) {
                 const tool = tools.find(t => t.id === p.toolId);
                 const toolRadius = tool ? Math.max(tool.width, tool.height) / 2 : 5;
                 const safeDistSq = (settings.microJointLength + toolRadius)**2;
-
                 for (const jp of jointPoints) {
-                    const dSq = (p.x - jp.x)**2 + (p.y - jp.y)**2;
-                    if (dSq < safeDistSq) {
-                        keepSingle = false;
-                        break;
-                    }
+                    if (((p.x - jp.x)**2 + (p.y - jp.y)**2) < safeDistSq) { keepSingle = false; break; }
                 }
             }
-
-            if (keepSingle) {
-                keptPunches.push(p);
-            }
+            if (keepSingle) keptPunches.push(p);
         }
-
-        // Replace punch list
         punches.length = 0;
         punches.push(...keptPunches);
-
-        // Uncover segments
-        // If we removed tools from a segment, we MUST allow the auto-puncher (Step 8) to see it.
-        segmentsToUncover.forEach(idx => {
-            coveredIndices.delete(idx);
-        });
+        segmentsToUncover.forEach(idx => coveredIndices.delete(idx));
     }
 
     // 6. Filter Tools
@@ -612,20 +657,25 @@ export const generateContourPunches = (
         if (coveredIndices.has(idx)) continue;
         const seg = processed.segments[idx];
 
-        // --- Joint Logic Application ---
-        let extStart = settings.extension;
-        let extEnd = settings.extension;
-
-        if (outerLoopIndices.has(idx)) {
-            // Apply micro-joints if the segment vertices are flagged in jointVertices
-            if (jointVertices.has(getPointKey(seg.p1))) extStart = -settings.microJointLength;
-            if (jointVertices.has(getPointKey(seg.p2))) extEnd = -settings.microJointLength;
-        }
-
         if (seg.type === 'line') {
-            processLineSegment(seg, geometry, availableTools, settings, { start: extStart, end: extEnd }, punches);
+            // Topology Lookup for Smart Extension
+            const neighbor1Idx = vertexMap.get(getPointKey(seg.p1))?.segmentIndices.find(i => i !== idx);
+            const neighbor2Idx = vertexMap.get(getPointKey(seg.p2))?.segmentIndices.find(i => i !== idx);
+            const neighbor1 = neighbor1Idx !== undefined ? processed.segments[neighbor1Idx] : undefined;
+            const neighbor2 = neighbor2Idx !== undefined ? processed.segments[neighbor2Idx] : undefined;
+
+            processLineSegment(
+                seg, 
+                geometry, 
+                availableTools, 
+                settings, 
+                punches, 
+                processed.segments,
+                { start: neighbor1, end: neighbor2 }, // Pass neighbors for angle analysis
+                jointVertices
+            );
         } else if (seg.type === 'arc') {
-            processArcSegment(seg, geometry, availableTools, settings, jointVertices, punches, placedSingleHits);
+            processArcSegment(seg, geometry, availableTools, settings, jointVertices, punches, placedSingleHits, processed.segments);
         }
     }
 

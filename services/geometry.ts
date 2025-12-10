@@ -255,7 +255,8 @@ export const getToolCorners = (tool: Tool, x: number, y: number, rotation: numbe
 /**
  * Checks if a tool placed at (x,y) "gouges" into the part geometry.
  * A gouge is defined as any of the tool's corners being strictly INSIDE the contour,
- * UNLESS that corner is on the segment we are currently processing (touching allowed).
+ * UNLESS that corner is on the segment we are currently processing (touching allowed),
+ * OR if it is touching any other boundary line (admissible contact).
  */
 export const isToolGouging = (
     tool: Tool, 
@@ -264,12 +265,15 @@ export const isToolGouging = (
     rotation: number, 
     geometry: PartGeometry, 
     bbox: PartGeometry['bbox'],
-    currentSegment: Segment
+    currentSegment: Segment,
+    allSegments?: Segment[]
 ): boolean => {
     if (!geometry || !bbox) return false;
     
     const corners = getToolCorners(tool, x, y, rotation);
-    const TOLERANCE = 0.5; // Allow minor overlap/touching
+    const DEFAULT_TOLERANCE = 0.5;
+    const CORNER_TOLERANCE = 2.5; // Relaxed tolerance near vertices (Corners/Fillets)
+    const VERTEX_ZONE_SQ = 5.0 * 5.0; // 5mm radius around vertex to engage relaxed tolerance
     
     // Denormalize helper for geometry check
     const denorm = (p: Point) => ({ x: p.x + bbox.minX, y: p.y + bbox.minY });
@@ -279,32 +283,88 @@ export const isToolGouging = (
         
         // 1. Is the corner inside the material?
         if (isPointInsideContour(rawCorner, geometry)) {
-            // 2. It is inside. Is it just touching the current segment?
-            // Calculate distance to current segment.
+            // Adaptive Tolerance Logic:
+            // If the corner is close to ANY vertex of the geometry, use a larger tolerance.
+            // This allows tools to "poke" into fillets or touch perpendicular lines without being flagged.
+            let activeTolerance = DEFAULT_TOLERANCE;
+            
+            if (allSegments) {
+                // Check proximity to any vertex in the full geometry
+                // Optimization: In a loop, breaking early is fine.
+                // We check p1 of all segments (covers all vertices effectively for closed loops)
+                for (const seg of allSegments) {
+                    const distSq = (corner.x - seg.p1.x)**2 + (corner.y - seg.p1.y)**2;
+                    if (distSq < VERTEX_ZONE_SQ) {
+                        activeTolerance = CORNER_TOLERANCE;
+                        break;
+                    }
+                }
+            }
+
+            // 2. Is it touching the CURRENT segment?
             let dist = 0;
             const { p1, p2 } = currentSegment;
-            const rawP1 = denorm(p1);
-            const rawP2 = denorm(p2);
-
+            // Calculations in Normalized Space (consistent with corner and allSegments)
+            // Note: If currentSegment came from geometry directly it is normalized. 
+            // Previous version denormalized p1/p2, but corner was normalized?
+            // Wait, isToolGouging contract: 
+            // - `corner` is from `x,y` (Normalized).
+            // - `allSegments` are Normalized.
+            // - `currentSegment` is Normalized.
+            // - `isPointInsideContour` uses `rawCorner` (Denormalized) against `geometry` (Normalized Entities + BBox).
+            //   Wait, geometry.entities are Normalized. bbox is usually 0-based if from `getGeometryFromEntities`.
+            //   But `isPointInsideContour` adds `bbox.minX`?
+            //   If `geometry` passed here is the original `part.geometry` (Normalized Entities, 0-based BBox),
+            //   then `denorm` adds 0. So `rawCorner == corner`. 
+            //   This is correct for standard flow.
+            
             if (currentSegment.type === 'line') {
-                const l2 = (rawP2.x - rawP1.x)**2 + (rawP2.y - rawP1.y)**2;
-                if (l2 === 0) dist = Math.sqrt((rawCorner.x - rawP1.x)**2 + (rawCorner.y - rawP1.y)**2);
+                const l2 = (p2.x - p1.x)**2 + (p2.y - p1.y)**2;
+                if (l2 === 0) dist = Math.sqrt((corner.x - p1.x)**2 + (corner.y - p1.y)**2);
                 else {
-                    let t = ((rawCorner.x - rawP1.x) * (rawP2.x - rawP1.x) + (rawCorner.y - rawP1.y) * (rawP2.y - rawP1.y)) / l2;
+                    let t = ((corner.x - p1.x) * (p2.x - p1.x) + (corner.y - p1.y) * (p2.y - p1.y)) / l2;
                     t = Math.max(0, Math.min(1, t));
-                    const projX = rawP1.x + t * (rawP2.x - rawP1.x);
-                    const projY = rawP1.y + t * (rawP2.y - rawP1.y);
-                    dist = Math.sqrt((rawCorner.x - projX)**2 + (rawCorner.y - projY)**2);
+                    const projX = p1.x + t * (p2.x - p1.x);
+                    const projY = p1.y + t * (p2.y - p1.y);
+                    dist = Math.sqrt((corner.x - projX)**2 + (corner.y - projY)**2);
                 }
             } else if (currentSegment.type === 'arc' && currentSegment.radius && currentSegment.center) {
-                const rawCenter = denorm(currentSegment.center);
-                const distToCenter = Math.sqrt((rawCorner.x - rawCenter.x)**2 + (rawCorner.y - rawCenter.y)**2);
+                const distToCenter = Math.sqrt((corner.x - currentSegment.center.x)**2 + (corner.y - currentSegment.center.y)**2);
                 dist = Math.abs(distToCenter - currentSegment.radius);
             }
 
-            // If distance > Tolerance, it's a real gouge into NEIGHBORING material
-            if (dist > TOLERANCE) {
-                return true;
+            // If distance > Tolerance, it might be a gouge.
+            // BUT, if it is touching ANY other segment, it is admissible.
+            if (dist > activeTolerance) {
+                if (allSegments) {
+                    let touchingAny = false;
+                    for (const seg of allSegments) {
+                        if (seg === currentSegment) continue;
+                        
+                        let dOther = 0;
+                        if (seg.type === 'line') {
+                             const l2 = (seg.p2.x - seg.p1.x)**2 + (seg.p2.y - seg.p1.y)**2;
+                             if (l2 === 0) dOther = Math.sqrt((corner.x - seg.p1.x)**2 + (corner.y - seg.p1.y)**2);
+                             else {
+                                 let t = ((corner.x - seg.p1.x) * (seg.p2.x - seg.p1.x) + (corner.y - seg.p1.y) * (seg.p2.y - seg.p1.y)) / l2;
+                                 t = Math.max(0, Math.min(1, t));
+                                 const px = seg.p1.x + t * (seg.p2.x - seg.p1.x);
+                                 const py = seg.p1.y + t * (seg.p2.y - seg.p1.y);
+                                 dOther = Math.sqrt((corner.x - px)**2 + (corner.y - py)**2);
+                             }
+                        } else if (seg.type === 'arc' && seg.radius && seg.center) {
+                             const dc = Math.sqrt((corner.x - seg.center.x)**2 + (corner.y - seg.center.y)**2);
+                             dOther = Math.abs(dc - seg.radius);
+                        }
+                        
+                        if (dOther <= activeTolerance) {
+                            touchingAny = true;
+                            break;
+                        }
+                    }
+                    if (touchingAny) continue; // Touching neighbor, admissible.
+                }
+                return true; // Real Gouge
             }
         }
     }

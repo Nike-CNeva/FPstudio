@@ -5,8 +5,10 @@ import { TOLERANCE } from './punchingUtils';
 type ToolSelectorStrategy = (dim1: number, dim2: number, tools: Tool[], tolerance: number) => Tool[];
 
 const scoreToolShape = (t: Tool) => {
-    if (t.shape === ToolShape.Rectangle) return 3;
-    if (t.shape === ToolShape.Square) return 2;
+    // Explicit priority requested: Rectangle > Square >> Oblong
+    if (t.shape === ToolShape.Rectangle) return 10;
+    if (t.shape === ToolShape.Square) return 5;
+    if (t.shape === ToolShape.Oblong) return 0; // Very low priority
     return 1;
 };
 
