@@ -212,18 +212,26 @@ export interface SheetStock {
     material: string;
     thickness: number;
     cost: number;
+    useInNesting: boolean; // For 'selected-only' strategy
 }
 
 export enum SheetUtilizationStrategy {
+    FirstOnly = 'first-only',
     ListedOrder = 'listed-order',
-    Smallest = 'smallest',
-    BestFit = 'best-fit'
+    SelectedOnly = 'selected-only',
+    SmallestFirst = 'smallest-first',
+    BestFit = 'best-fit',
+    AutoCalculation = 'auto-calculation'
 }
 
 export interface NestingSettings {
   availableSheets: SheetStock[];
   activeSheetId: string | null; // Currently selected for editing or primary use
   
+  // Global Sheet Params
+  defaultMaterial: string;
+  defaultThickness: number;
+
   // General Params
   partSpacingX: number;
   partSpacingY: number;
@@ -234,6 +242,7 @@ export interface NestingSettings {
   nestingDirection: number; // 0-8 for a 3x3 grid, representing start corner/edge
   clampPositions: number[];
   nestUnderClamps: boolean;
+  loadingStopId: number; // 0 = Auto, 1, 2, 3, 4
   
   // Strategy
   utilizationStrategy: SheetUtilizationStrategy;

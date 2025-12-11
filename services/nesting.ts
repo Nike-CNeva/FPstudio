@@ -1,34 +1,25 @@
 
-import { NestLayout, Part, ScheduledPart, NestingConstraints, NestResultSheet, Tool, ToolShape, PunchType } from '../types';
+import { NestResultSheet, ScheduledPart, Part, Tool, NestingSettings, SheetStock, SheetUtilizationStrategy } from '../types';
 import { generateId } from '../utils/helpers';
 import { calculatePartPhysicalExtents } from './geometry';
 
-// --- CONFIG & CONSTANTS ---
-const SMALL_PART_THRESHOLD = 300; // mm. Если ширина ИЛИ высота < 300, считаем деталь мелкой (заполнителем)
-const ITERATIONS_PER_SHEET = 200; // Количество попыток укладки для одного листа (Глубина поиска)
-const BIG_PART_DENSITY_THRESHOLD = 0.5; // 50% площади листа должны занимать большие детали (если они есть)
-const CONSECUTIVE_BONUS_WEIGHT = 0.01; // Вес бонуса за группировку одинаковых деталей (эквивалент 1% КПД за пару)
-
-// --- TYPES FOR PACKING ---
+// ----------------------------------------------------------------------
+// TYPES & HELPERS
+// ----------------------------------------------------------------------
 
 interface PackerItem {
     uid: string;
     partId: string;
-    partName: string;
-    
-    // Physical dimensions including tool extension
-    baseW: number;
-    baseH: number;
-    
-    // Calculated dimensions for 0 and 90 degree rotation
-    // W/H here includes spacing!
-    dims0: { w: number, h: number, offsetX: number, offsetY: number };
-    dims90: { w: number, h: number, offsetX: number, offsetY: number };
-    
-    area: number;
-    nesting: NestingConstraints;
-    isSmall: boolean; // Flag for filling strategy
-    isCritical: boolean; // Flag for priority strategy (fits only one way)
+    width: number;
+    height: number;
+    offsetX: number; 
+    offsetY: number;
+    allowRotation: boolean;
+    // Pre-calculated for 90deg rotation
+    rotatedWidth: number;
+    rotatedHeight: number;
+    rotatedOffsetX: number;
+    rotatedOffsetY: number;
 }
 
 interface FreeRect {
@@ -36,587 +27,382 @@ interface FreeRect {
     y: number;
     w: number;
     h: number;
-    area: number;
 }
 
-interface SheetState {
-    id: string;
-    defId: string; // Stock ID
-    width: number; // Usable width (inside margins)
-    height: number; // Usable height (inside margins)
-    
-    // Margins to map back to World Coords
-    marginLeft: number;
-    marginBottom: number;
-    
+type SplitStrategy = 'Vertical' | 'Horizontal' | 'ShortAxis' | 'LongAxis';
+
+// ----------------------------------------------------------------------
+// ROBUST GUILLOTINE PACKER CLASS
+// ----------------------------------------------------------------------
+
+class GuillotinePacker {
+    width: number;
+    height: number;
+    spacingX: number;
+    spacingY: number;
     freeRects: FreeRect[];
     placedItems: { item: PackerItem, x: number, y: number, rotation: number }[];
-    
-    // Stats
-    totalArea: number;
-    usedArea: number;
-}
+    strategy: SplitStrategy;
 
-// Result of a single packing simulation
-interface PackingResult {
-    sheet: SheetState;
-    placedUIDs: Set<string>;
-    efficiency: number; // Total used area / Sheet area
-    bigPartDensity: number; // Big parts area / Sheet area
-    allBigsPlaced: boolean; // True if priorityQueue was fully emptied
-    consecutiveBonus: number; // Count of identical big parts placed sequentially
-}
-
-// --- HELPER FUNCTIONS ---
-
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-// Fisher-Yates Shuffle
-const shuffleArray = <T>(array: T[]): T[] => {
-    const arr = [...array];
-    for (let i = arr.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
-};
-
-const getCommonLineGap = (parts: ScheduledPart[], allParts: Part[], tools: Tool[]): number => {
-    // Collect all tools used
-    const usedToolIds = new Set<string>();
-    parts.forEach(sp => {
-        const p = allParts.find(ap => ap.id === sp.partId);
-        p?.punches.forEach(punch => usedToolIds.add(punch.toolId));
-    });
-
-    let minDimension = 5; 
-    const contourTools = Array.from(usedToolIds).map(id => tools.find(t => t.id === id)).filter(t => t && (
-        t.punchType === PunchType.Contour || t.shape === ToolShape.Rectangle || t.shape === ToolShape.Square || t.shape === ToolShape.Oblong
-    )) as Tool[];
-
-    if (contourTools.length > 0) {
-        const dims = contourTools.map(t => Math.min(t.width, t.height));
-        minDimension = Math.min(...dims);
-    }
-    return -minDimension; // Negative gap implies overlap allowed by kerf width
-};
-
-const isSafeFromClamps = (
-    rectX: number, rectY: number, rectW: number, rectH: number,
-    sheetState: SheetState,
-    clampPositions: number[],
-    nestUnderClamps: boolean
-): boolean => {
-    if (nestUnderClamps) return true;
-
-    // Map to World Coordinates (Y-Up, 0 at Bottom)
-    // sheetState.y is logical Y from bottom margin
-    const worldX = sheetState.marginLeft + rectX;
-    const worldY = sheetState.marginBottom + rectY;
-
-    const clampBuffer = 50; 
-    const clampDepth = 100; // Danger zone Y < 100
-
-    // Optimization: If part is clearly above clamp zone, it's safe
-    if (worldY > clampDepth) return true;
-
-    for (const clampX of clampPositions) {
-        // Check X overlap
-        const clampLeft = clampX - clampBuffer;
-        const clampRight = clampX + clampBuffer;
-        const partRight = worldX + rectW;
-
-        // Intersection on X axis
-        if (worldX < clampRight && partRight > clampLeft) {
-            return false; // Collision in danger zone
-        }
-    }
-    return true;
-};
-
-// --- GUILLOTINE PACKER LOGIC ---
-
-const splitFreeRect = (freeRect: FreeRect, usedRect: {w: number, h: number}): FreeRect[] => {
-    const w = usedRect.w;
-    const h = usedRect.h;
-    
-    const remW = freeRect.w - w;
-    const remH = freeRect.h - h;
-
-    if (remW < -0.01 || remH < -0.01) return []; 
-
-    const newRects: FreeRect[] = [];
-
-    // Heuristic: Shorter Axis Split (SAS)
-    if (freeRect.w < freeRect.h) {
-        if (remH > 0) newRects.push({ x: freeRect.x, y: freeRect.y + h, w: freeRect.w, h: remH, area: freeRect.w * remH }); // Top
-        if (remW > 0) newRects.push({ x: freeRect.x + w, y: freeRect.y, w: remW, h: h, area: remW * h }); // Right
-    } else {
-        if (remW > 0) newRects.push({ x: freeRect.x + w, y: freeRect.y, w: remW, h: freeRect.h, area: remW * freeRect.h }); // Right
-        if (remH > 0) newRects.push({ x: freeRect.x, y: freeRect.y + h, w: w, h: remH, area: w * remH }); // Top
+    constructor(width: number, height: number, spacingX: number, spacingY: number, strategy: SplitStrategy = 'ShortAxis') {
+        this.width = width;
+        this.height = height;
+        this.spacingX = spacingX;
+        this.spacingY = spacingY;
+        this.freeRects = [{ x: 0, y: 0, w: width, h: height }];
+        this.placedItems = [];
+        this.strategy = strategy;
     }
 
-    return newRects;
-};
+    // Heuristic: Best Area Fit (BAF)
+    // Find the free rectangle that fits the item with the minimal remaining area.
+    // Also considers "Position Penalty" to encourage specific filling orders (e.g. Left-to-Right).
+    findPosition(item: PackerItem): { rectIndex: number, rotation: number, score: number } | null {
+        let bestScore = Infinity;
+        let bestRectIndex = -1;
+        let bestRotation = 0; // 0 or 90
 
-// --- SINGLE SHEET PACKING SIMULATION ---
+        for (let i = 0; i < this.freeRects.length; i++) {
+            const rect = this.freeRects[i];
 
-/**
- * Packs a single sheet given a prioritized list of items.
- * Tries to pack 'priorityItems' first (Bigs) to meet density target, then fills voids with 'fillItems'.
- */
-const packSingleSheet = (
-    priorityQueue: PackerItem[], // The specific order we want to try (Bigs)
-    fillQueue: PackerItem[],     // Pool of small parts to fill gaps
-    stockSheet: any,
-    settings: NestLayout['settings']
-): PackingResult => {
-    
-    const { 
-        sheetMarginLeft, sheetMarginTop, sheetMarginRight, sheetMarginBottom, 
-        nestUnderClamps, clampPositions 
-    } = settings;
+            // --- Strategy Position Penalty ---
+            // Small bias to pick top-left or bottom-left depending on strategy
+            // Normalized to be small relative to area scores
+            let positionPenalty = 0;
+            if (this.strategy === 'Vertical') {
+                // Penalize X heavily, Y slightly -> Fill Columns Left-to-Right
+                positionPenalty = (rect.x * 10 + rect.y) * 0.0001; 
+            } else if (this.strategy === 'Horizontal') {
+                // Penalize Y heavily, X slightly -> Fill Rows Bottom-to-Top
+                positionPenalty = (rect.y * 10 + rect.x) * 0.0001;
+            }
 
-    const usableW = stockSheet.width - sheetMarginLeft - sheetMarginRight;
-    const usableH = stockSheet.height - sheetMarginTop - sheetMarginBottom;
+            // Try 0 degrees
+            if (item.width <= rect.w && item.height <= rect.h) {
+                // BSSF (Best Short Side Fit) - minimize the smaller dimension of the leftover
+                const leftoverX = Math.abs(rect.w - item.width);
+                const leftoverY = Math.abs(rect.h - item.height);
+                const fitScore = Math.min(leftoverX, leftoverY); 
+                
+                const totalScore = fitScore + positionPenalty;
 
-    const sheet: SheetState = {
-        id: generateId(),
-        defId: stockSheet.id,
-        width: usableW,
-        height: usableH,
-        marginLeft: sheetMarginLeft,
-        marginBottom: sheetMarginBottom,
-        freeRects: [{ x: 0, y: 0, w: usableW, h: usableH, area: usableW * usableH }],
-        placedItems: [],
-        totalArea: stockSheet.width * stockSheet.height,
-        usedArea: 0
-    };
+                if (totalScore < bestScore) {
+                    bestScore = totalScore;
+                    bestRectIndex = i;
+                    bestRotation = 0;
+                }
+            }
 
-    const placedUIDs = new Set<string>();
-    let placedBigsCount = 0;
-    let placedBigsArea = 0;
-    
-    let consecutiveBonus = 0;
-    let lastPlacedPartId: string | null = null;
+            // Try 90 degrees
+            if (item.allowRotation) {
+                if (item.rotatedWidth <= rect.w && item.rotatedHeight <= rect.h) {
+                    const leftoverX = Math.abs(rect.w - item.rotatedWidth);
+                    const leftoverY = Math.abs(rect.h - item.rotatedHeight);
+                    const fitScore = Math.min(leftoverX, leftoverY);
 
-    // 1. Pack Priority Items (Bigs) - Best Vertical Fit Strategy
-    for (const item of priorityQueue) {
-        let bestRectIdx = -1;
-        let bestRot = 0;
-        
-        // Metrics for "Best Fit"
-        // Priority 1: Minimum Vertical Gap (Tightest height fit)
-        // Priority 2: Minimum Area Waste (Tightest overall area fit)
-        let minVerticalGap = Infinity;
-        let minAreaWaste = Infinity;
+                    const totalScore = fitScore + positionPenalty;
 
-        // Find Best Fit in current sheet voids
-        for (let rIdx = 0; rIdx < sheet.freeRects.length; rIdx++) {
-            const rect = sheet.freeRects[rIdx];
-            
-            // Helper to check and update best candidate
-            const checkCandidate = (dims: {w: number, h: number}, rot: number) => {
-                if (dims.w <= rect.w && dims.h <= rect.h) {
-                    if (isSafeFromClamps(rect.x, rect.y, dims.w, dims.h, sheet, clampPositions, nestUnderClamps)) {
-                        const vGap = rect.h - dims.h;
-                        const waste = rect.area - item.area;
-                        
-                        // STRICT HIERARCHY:
-                        // 1. Smaller Vertical Gap is always better
-                        // 2. If Vertical Gap is almost same (< 1.0mm), choose smaller Area Waste (tighter width)
-                        const isBetter = 
-                            (vGap < minVerticalGap - 1.0) || 
-                            (Math.abs(vGap - minVerticalGap) <= 1.0 && waste < minAreaWaste);
-
-                        if (isBetter) {
-                            minVerticalGap = vGap;
-                            minAreaWaste = waste;
-                            bestRectIdx = rIdx;
-                            bestRot = rot;
-                        }
+                    if (totalScore < bestScore) {
+                        bestScore = totalScore;
+                        bestRectIndex = i;
+                        bestRotation = 90;
                     }
                 }
-            };
-
-            // Check 0 deg
-            if (item.nesting.allow0_180) {
-                checkCandidate(item.dims0, 0);
-            }
-            // Check 90 deg
-            if (item.nesting.allow90_270) {
-                checkCandidate(item.dims90, 90);
             }
         }
 
-        if (bestRectIdx !== -1) {
-            const rect = sheet.freeRects[bestRectIdx];
-            const dims = bestRot === 0 ? item.dims0 : item.dims90;
-            
-            sheet.placedItems.push({ item, x: rect.x, y: rect.y, rotation: bestRot });
-            placedUIDs.add(item.uid);
-            placedBigsCount++;
-            placedBigsArea += item.baseW * item.baseH; // Use pure physical area
-            
-            // Track Bonus for Consecutive Identical Big Parts
-            if (lastPlacedPartId === item.partId) {
-                consecutiveBonus++;
-            }
-            lastPlacedPartId = item.partId;
-            
-            const newRects = splitFreeRect(rect, { w: dims.w, h: dims.h });
-            sheet.freeRects.splice(bestRectIdx, 1);
-            sheet.freeRects.push(...newRects);
+        if (bestRectIndex !== -1) {
+            return { rectIndex: bestRectIndex, rotation: bestRotation, score: bestScore };
         }
+        return null;
     }
 
-    // 2. Pack Fill Items (Smalls) - Max Void Strategy with Vertical Optimization
-    // We only pack smalls if we have voids.
-    const availableFill = fillQueue.filter(f => !placedUIDs.has(f.uid));
+    placeItem(item: PackerItem, rectIndex: number, rotation: number) {
+        const rect = this.freeRects[rectIndex];
+        const w = rotation === 90 ? item.rotatedWidth : item.width;
+        const h = rotation === 90 ? item.rotatedHeight : item.height;
 
-    while (availableFill.length > 0) {
-        // Find Largest Free Rect to fill
-        let maxVoidRectIdx = -1;
-        let maxVoidArea = -1;
+        this.placedItems.push({
+            item,
+            x: rect.x,
+            y: rect.y,
+            rotation
+        });
 
-        for (let rIdx = 0; rIdx < sheet.freeRects.length; rIdx++) {
-            if (sheet.freeRects[rIdx].area > maxVoidArea) {
-                maxVoidArea = sheet.freeRects[rIdx].area;
-                maxVoidRectIdx = rIdx;
-            }
-        }
+        // "Used" dimensions include spacing
+        const usedW = w + this.spacingX;
+        const usedH = h + this.spacingY;
 
-        if (maxVoidRectIdx === -1) break; // No voids left (or empty)
-
-        const targetRect = sheet.freeRects[maxVoidRectIdx];
-        let bestItemIdx = -1;
-        let chosenRot = 0;
+        // Determine Split Method
+        let splitHorizontal = false;
         
-        // We want the Largest Item that fits, but if orientation allows, pick best Vertical Fit
-        // Since list is sorted by Area Descending, the first one that fits is usually the "Biggest".
-        // But we need to check both rotations for that specific item to see which fits *better* vertically.
+        const freeW = rect.w - usedW;
+        const freeH = rect.h - usedH;
 
-        for (let i = 0; i < availableFill.length; i++) {
-            const item = availableFill[i];
-            
-            let fits0 = false;
-            let fits90 = false;
-            let vGap0 = Infinity;
-            let vGap90 = Infinity;
-
-            if (item.nesting.allow0_180 && item.dims0.w <= targetRect.w && item.dims0.h <= targetRect.h) {
-                if (isSafeFromClamps(targetRect.x, targetRect.y, item.dims0.w, item.dims0.h, sheet, clampPositions, nestUnderClamps)) {
-                    fits0 = true;
-                    vGap0 = targetRect.h - item.dims0.h;
-                }
-            }
-            
-            if (item.nesting.allow90_270 && item.dims90.w <= targetRect.w && item.dims90.h <= targetRect.h) {
-                if (isSafeFromClamps(targetRect.x, targetRect.y, item.dims90.w, item.dims90.h, sheet, clampPositions, nestUnderClamps)) {
-                    fits90 = true;
-                    vGap90 = targetRect.h - item.dims90.h;
-                }
-            }
-
-            if (fits0 || fits90) {
-                bestItemIdx = i;
-                
-                // Decide rotation based on Vertical Gap
-                if (fits0 && fits90) {
-                    chosenRot = vGap0 <= vGap90 ? 0 : 90;
-                } else {
-                    chosenRot = fits0 ? 0 : 90;
-                }
-                
-                break; // Found the biggest part that fits
-            }
-        }
-
-        if (bestItemIdx !== -1) {
-            const item = availableFill[bestItemIdx];
-            const dims = chosenRot === 0 ? item.dims0 : item.dims90;
-
-            sheet.placedItems.push({ item, x: targetRect.x, y: targetRect.y, rotation: chosenRot });
-            placedUIDs.add(item.uid);
-            
-            const newRects = splitFreeRect(targetRect, { w: dims.w, h: dims.h });
-            sheet.freeRects.splice(maxVoidRectIdx, 1);
-            sheet.freeRects.push(...newRects);
-            
-            availableFill.splice(bestItemIdx, 1);
+        if (this.strategy === 'Horizontal') {
+            // Cut Horizontally -> Creates Rows (Shelves)
+            // Top Rect is Full Width. Right Rect is constrained Height.
+            splitHorizontal = true;
+        } else if (this.strategy === 'Vertical') {
+            // Cut Vertically -> Creates Columns
+            // Right Rect is Full Height. Top Rect is constrained Width.
+            splitHorizontal = false;
+        } else if (this.strategy === 'ShortAxis') {
+            // Standard Heuristic: Minimize the length of the cut
+            // If leftover W < leftover H, vertical cut is shorter? 
+            // Wait, vertical cut length is H. Horizontal cut length is W.
+            // Actually usually based on the shape of remaining area.
+            // Split Shorter Leftover Axis rule:
+            splitHorizontal = freeW < freeH;
         } else {
-            // Nothing fits in this void, remove it from consideration
-            sheet.freeRects.splice(maxVoidRectIdx, 1);
+            splitHorizontal = freeW > freeH;
         }
+
+        // Remove the used rectangle
+        this.freeRects.splice(rectIndex, 1);
+
+        // GUILLOTINE SPLIT LOGIC
+        // We assume placement at (rect.x, rect.y) [Bottom-Left of free space]
+        
+        let newRect1: FreeRect | null = null;
+        let newRect2: FreeRect | null = null;
+
+        const rightX = rect.x + usedW;
+        const topY = rect.y + usedH;
+        const hasRight = freeW > 0;
+        const hasTop = freeH > 0;
+
+        if (splitHorizontal) {
+            // --- HORIZONTAL SPLIT (Cut along X axis) ---
+            // New Right Rect: Located beside item. Height is LIMITED to item height.
+            // New Top Rect: Located above item. Width is FULL rect width.
+            
+            if (hasTop) {
+                // Top: x, y+h, full_w, remaining_h
+                newRect1 = { x: rect.x, y: topY, w: rect.w, h: rect.h - usedH };
+            }
+            if (hasRight) {
+                // Right: x+w, y, remaining_w, used_h
+                newRect2 = { x: rightX, y: rect.y, w: rect.w - usedW, h: Math.min(usedH, rect.h) };
+            }
+        } else {
+            // --- VERTICAL SPLIT (Cut along Y axis) ---
+            // New Top Rect: Located above item. Width is LIMITED to item width.
+            // New Right Rect: Located beside item. Height is FULL rect height.
+            
+            if (hasTop) {
+                // Top: x, y+h, used_w, remaining_h
+                newRect1 = { x: rect.x, y: topY, w: Math.min(usedW, rect.w), h: rect.h - usedH };
+            }
+            if (hasRight) {
+                // Right: x+w, y, remaining_w, full_h
+                newRect2 = { x: rightX, y: rect.y, w: rect.w - usedW, h: rect.h };
+            }
+        }
+
+        if (newRect1 && newRect1.w > 0 && newRect1.h > 0) this.freeRects.push(newRect1);
+        if (newRect2 && newRect2.w > 0 && newRect2.h > 0) this.freeRects.push(newRect2);
+
+        // Pruning tiny rectangles to avoid fragmentation overhead
+        this.freeRects = this.freeRects.filter(r => r.w >= 5 && r.h >= 5);
+        
+        // --- OPTIONAL: Sort Free Rects to improve packing density? ---
+        // For strategies like 'Vertical', we might want to consume bottom-left voids first.
+        // findPosition does global scan, but cleaner list helps debugging.
     }
+}
 
-    // Calculate Metrics
-    const usedArea = sheet.placedItems.reduce((sum, p) => sum + (p.item.baseW * p.item.baseH), 0);
-    const efficiency = usedArea / sheet.totalArea;
-    const bigPartDensity = placedBigsArea / sheet.totalArea;
-    sheet.usedArea = usedArea;
+// ----------------------------------------------------------------------
+// GENERATOR
+// ----------------------------------------------------------------------
 
-    return { 
-        sheet, 
-        placedUIDs, 
-        efficiency,
-        bigPartDensity,
-        allBigsPlaced: placedBigsCount === priorityQueue.length,
-        consecutiveBonus
-    };
-};
-
-
-/**
- * ASYNC Generator for Nesting Process.
- * Yields updated NestResultSheet[] arrays as sheets are completed.
- */
 export async function* nestingGenerator(
     scheduledParts: ScheduledPart[], 
     allParts: Part[], 
-    tools: Tool[],
-    settings: NestLayout['settings']
-): AsyncGenerator<NestResultSheet[], void, unknown> {
+    tools: Tool[], 
+    settings: NestingSettings
+): AsyncGenerator<NestResultSheet[]> {
     
-    const { availableSheets, activeSheetId, useCommonLine, partSpacingX, partSpacingY, sheetMarginLeft, sheetMarginTop, sheetMarginRight, sheetMarginBottom } = settings;
+    // 1. Prepare Items
+    const rawItems: PackerItem[] = [];
 
-    const activeStock = availableSheets.find(s => s.id === activeSheetId) || availableSheets[0];
-    if (!activeStock) throw new Error("Нет доступных листов.");
-
-    const sheetUsableW = activeStock.width - sheetMarginLeft - sheetMarginRight;
-    const sheetUsableH = activeStock.height - sheetMarginTop - sheetMarginBottom;
-
-    // --- 1. PREPARE ITEMS ---
-    const allItems: PackerItem[] = [];
-    const spacingX = useCommonLine ? getCommonLineGap(scheduledParts, allParts, tools) : partSpacingX;
-    const spacingY = useCommonLine ? spacingX : partSpacingY;
-
-    scheduledParts.forEach(sp => {
+    for (const sp of scheduledParts) {
         const part = allParts.find(p => p.id === sp.partId);
-        if (!part) return;
-        const bounds = calculatePartPhysicalExtents(part, tools);
-        
-        const w0 = bounds.width + spacingX;
-        const h0 = bounds.height + spacingY;
-        const w90 = bounds.height + spacingX;
-        const h90 = bounds.width + spacingY;
-        
-        const minDim = Math.min(bounds.width, bounds.height);
-        const isSmall = minDim < SMALL_PART_THRESHOLD;
+        if (!part) continue;
 
-        // --- CRITICALITY CHECK ---
-        // A part is "Critical" if it MUST be placed in a specific orientation because
-        // the other orientation violates the sheet boundaries OR user settings disallow it.
-        
-        // 1. Geometric constraints
-        const fits0_Geo = w0 <= sheetUsableW && h0 <= sheetUsableH;
-        const fits90_Geo = w90 <= sheetUsableW && h90 <= sheetUsableH;
-
-        // 2. User Constraints
-        const allowed0 = sp.nesting.allow0_180;
-        const allowed90 = sp.nesting.allow90_270;
-
-        // Combined Feasibility
-        const valid0 = fits0_Geo && allowed0;
-        const valid90 = fits90_Geo && allowed90;
-
-        // If it fits ONE way but NOT the other, it is critical.
-        // If it fits NO way, it's impossible (but we mark as critical to try forcefully).
-        // If it fits BOTH ways, it is Flexible (not critical).
-        const isCritical = (valid0 && !valid90) || (!valid0 && valid90);
-
-        // Filter out parts that don't fit at all to avoid infinite loops, or handle gracefully
-        if (!valid0 && !valid90) {
-            console.warn(`Part ${part.name} is too large for the sheet margins! Skipping.`);
-            return;
-        }
+        const dims0 = calculatePartPhysicalExtents(part, tools);
+        const maxY0 = dims0.height - dims0.offsetY; 
 
         for (let i = 0; i < sp.quantity; i++) {
-            allItems.push({
+            rawItems.push({
                 uid: generateId(),
-                partId: part.id,
-                partName: part.name,
-                baseW: bounds.width,
-                baseH: bounds.height,
-                dims0: { w: w0, h: h0, offsetX: bounds.offsetX, offsetY: bounds.offsetY },
-                dims90: { w: w90, h: h90, offsetX: bounds.height - bounds.offsetY, offsetY: bounds.offsetX },
-                area: w0 * h0,
-                nesting: sp.nesting,
-                isSmall,
-                isCritical
+                partId: sp.partId,
+                width: dims0.width,
+                height: dims0.height,
+                offsetX: dims0.offsetX,
+                offsetY: dims0.offsetY,
+                allowRotation: sp.nesting.allow90_270,
+                rotatedWidth: dims0.height,
+                rotatedHeight: dims0.width,
+                rotatedOffsetX: maxY0,
+                rotatedOffsetY: dims0.offsetX
             });
-        }
-    });
-
-    // Initial Sort by Area Descending
-    allItems.sort((a, b) => b.area - a.area);
-
-    const completedSheets: NestResultSheet[] = [];
-    const remainingItems = [...allItems];
-
-    // --- 2. MAIN LOOP: FILL SHEETS ONE BY ONE ---
-    while (remainingItems.length > 0) {
-        
-        // Stop if we exceeded sheet limit
-        if (activeStock.quantity && completedSheets.length >= activeStock.quantity) {
-            console.warn("Sheet limit reached, stopping nesting.");
-            break;
-        }
-
-        // Separate groups
-        // Critical Bigs: Must go first to ensure they fit.
-        // Flexible Bigs: Can be shuffled/rotated freely.
-        // Smalls: Filler.
-        
-        // Filter out Critical Bigs first
-        const criticalBigs = remainingItems.filter(i => !i.isSmall && i.isCritical);
-        // Then Flexible Bigs
-        const flexibleBigs = remainingItems.filter(i => !i.isSmall && !i.isCritical);
-        // Then Smalls
-        const remainingSmalls = remainingItems.filter(i => i.isSmall);
-
-        // If no bigs left, treat the largest smalls as "Bigs" to drive the layout
-        if (criticalBigs.length === 0 && flexibleBigs.length === 0 && remainingSmalls.length > 0) {
-            flexibleBigs.push(...remainingSmalls);
-            remainingSmalls.length = 0;
-        }
-
-        // Pre-calculate groups for "Grouped Shuffle" Strategy (Flexible Only)
-        const groupedFlexibleBigs = new Map<string, PackerItem[]>();
-        flexibleBigs.forEach(item => {
-            if (!groupedFlexibleBigs.has(item.partId)) groupedFlexibleBigs.set(item.partId, []);
-            groupedFlexibleBigs.get(item.partId)!.push(item);
-        });
-
-        // Ensure criticals are sorted by Area Descending (already done by initial sort, but good to ensure)
-        criticalBigs.sort((a,b) => b.area - a.area);
-
-        // --- DEEP PERMUTATION SEARCH (Monte Carlo) ---
-        let bestRun: PackingResult | null = null;
-
-        // Try ITERATIONS_PER_SHEET permutations
-        for (let iter = 0; iter < ITERATIONS_PER_SHEET; iter++) {
-            
-            // Allow UI to breathe every few iterations
-            if (iter % 10 === 0) await sleep(0);
-
-            // Construct Priority Queue with Mixed Strategy
-            let currentQueue: PackerItem[];
-            let shuffledFlexible: PackerItem[];
-
-            if (iter === 0) {
-                // Baseline: Standard Area Descending
-                shuffledFlexible = [...flexibleBigs]; 
-            } else if (iter < ITERATIONS_PER_SHEET * 0.4) {
-                // Strategy: Grouped Shuffle (40% of attempts)
-                const keys = shuffleArray(Array.from(groupedFlexibleBigs.keys()));
-                shuffledFlexible = [];
-                keys.forEach(k => shuffledFlexible.push(...groupedFlexibleBigs.get(k)!));
-            } else {
-                // Strategy: Full Random Shuffle
-                shuffledFlexible = shuffleArray(flexibleBigs);
-            }
-
-            // CRITICAL CHANGE: Always put Critical Bigs first!
-            // This ensures parts that fit only 1 way get the first pick of empty space.
-            currentQueue = [...criticalBigs, ...shuffledFlexible];
-
-            // Run Simulation
-            const runResult = packSingleSheet(currentQueue, remainingSmalls, activeStock, settings);
-
-            // Compare Logic with Constraint and Bonus
-            if (!bestRun) {
-                bestRun = runResult;
-            } else {
-                const runSatisfiesBigDensity = (runResult.bigPartDensity >= BIG_PART_DENSITY_THRESHOLD) || runResult.allBigsPlaced;
-                const bestSatisfiesBigDensity = (bestRun.bigPartDensity >= BIG_PART_DENSITY_THRESHOLD) || bestRun.allBigsPlaced;
-
-                // Priority 1: Satisfy Density Constraint
-                if (runSatisfiesBigDensity && !bestSatisfiesBigDensity) {
-                    bestRun = runResult;
-                } 
-                else if (bestSatisfiesBigDensity && !runSatisfiesBigDensity) {
-                    // Keep best
-                }
-                // Priority 2: Score = Efficiency + ConsecutiveBonus
-                else {
-                    const runScore = runResult.efficiency + (runResult.consecutiveBonus * CONSECUTIVE_BONUS_WEIGHT);
-                    const bestScore = bestRun.efficiency + (bestRun.consecutiveBonus * CONSECUTIVE_BONUS_WEIGHT);
-
-                    if (runScore > bestScore) {
-                        bestRun = runResult;
-                    }
-                }
-            }
-            
-            // Heuristic optimization
-            if (bestRun.efficiency > 0.96 && ((bestRun.bigPartDensity >= BIG_PART_DENSITY_THRESHOLD) || bestRun.allBigsPlaced)) break;
-        }
-
-        // --- COMMIT BEST SHEET ---
-        if (bestRun && bestRun.sheet.placedItems.length > 0) {
-            
-            // Remove placed items from remainingItems using UIDs
-            for (let i = remainingItems.length - 1; i >= 0; i--) {
-                if (bestRun.placedUIDs.has(remainingItems[i].uid)) {
-                    remainingItems.splice(i, 1);
-                }
-            }
-
-            // Convert to Result Type
-            const sheetState = bestRun.sheet;
-            const percent = (sheetState.usedArea / sheetState.totalArea) * 100;
-            const placedParts = sheetState.placedItems.map(p => {
-                const worldX = sheetState.marginLeft + p.x;
-                const worldY = sheetState.marginBottom + p.y;
-                const item = p.item;
-                const offsets = p.rotation === 0 ? item.dims0 : item.dims90;
-                return {
-                    id: p.item.uid,
-                    partId: p.item.partId,
-                    x: worldX + offsets.offsetX,
-                    y: worldY + offsets.offsetY,
-                    rotation: p.rotation
-                };
-            });
-
-            const newResultSheet: NestResultSheet = {
-                id: sheetState.id,
-                sheetName: `Лист ${completedSheets.length + 1}`,
-                stockSheetId: sheetState.defId,
-                width: activeStock.width,
-                height: activeStock.height,
-                material: activeStock.material,
-                thickness: activeStock.thickness,
-                placedParts,
-                usedArea: percent,
-                scrapPercentage: 100 - percent,
-                partCount: placedParts.length,
-                quantity: 1
-            };
-
-            completedSheets.push(newResultSheet);
-            
-            // YIELD UPDATE TO UI
-            yield [...completedSheets];
-
-        } else {
-            console.error("Could not place any remaining parts on a new sheet.");
-            break;
         }
     }
-}
 
-// Keep the sync version for compatibility if needed, but it's now deprecated in favor of generator
-export const performNesting = (
-    scheduledParts: ScheduledPart[], 
-    allParts: Part[], 
-    tools: Tool[],
-    settings: NestLayout['settings']
-): NestResultSheet[] => {
-    // Fallback: Just run 1 iteration
-    const gen = nestingGenerator(scheduledParts, allParts, tools, settings);
-    // This cannot be synchronously executed fully.
-    // For now, return empty or throw error if called synchronously.
-    throw new Error("Use nestingGenerator instead");
-};
+    const completedSheets: NestResultSheet[] = [];
+    const { 
+        sheetMarginTop, sheetMarginBottom, sheetMarginLeft, sheetMarginRight, 
+        partSpacingX, partSpacingY 
+    } = settings;
+
+    // Helper to calculate packing efficiency
+    const calculateEfficiency = (packer: GuillotinePacker, totalArea: number) => {
+        const usedArea = packer.placedItems.reduce((sum, p) => {
+            const w = p.rotation === 90 ? p.item.rotatedWidth : p.item.width;
+            const h = p.rotation === 90 ? p.item.rotatedHeight : p.item.height;
+            return sum + (w * h);
+        }, 0);
+        return usedArea / totalArea;
+    };
+
+    let remainingItems = [...rawItems];
+
+    // 2. Packing Loop
+    while (remainingItems.length > 0) {
+        
+        // Get Active Sheet
+        let activeStock: SheetStock | undefined;
+        if (settings.activeSheetId) {
+            activeStock = settings.availableSheets.find(s => s.id === settings.activeSheetId);
+        }
+        if (!activeStock && settings.availableSheets.length > 0) activeStock = settings.availableSheets[0];
+        if (!activeStock) break; 
+
+        const packW = activeStock.width - sheetMarginLeft - sheetMarginRight;
+        const packH = activeStock.height - sheetMarginTop - sheetMarginBottom;
+
+        // --- MULTI-PASS SIMULATION ---
+        // We will try 3 strategies and pick the winner for this specific sheet.
+        
+        // Strategy A: Vertical (Column) Packing. Sort Height Desc.
+        // Strategy B: Horizontal (Row) Packing. Sort Height Desc.
+        // Strategy C: Best Fit (ShortAxis). Sort Area Desc.
+
+        const strategies: { name: string, packer: GuillotinePacker, packedIndices: Set<number>, score: number }[] = [];
+
+        const configs = [
+            { id: 'Vertical', sort: 'height', strategy: 'Vertical' as SplitStrategy },
+            { id: 'Horizontal', sort: 'height', strategy: 'Horizontal' as SplitStrategy },
+            { id: 'BestFit', sort: 'area', strategy: 'ShortAxis' as SplitStrategy }
+        ];
+
+        for (const config of configs) {
+            // 1. Prepare sorted items clone
+            const currentItems = [...remainingItems];
+            if (config.sort === 'height') {
+                currentItems.sort((a, b) => Math.max(b.width, b.height) - Math.max(a.width, a.height));
+            } else {
+                currentItems.sort((a, b) => (b.width * b.height) - (a.width * a.height));
+            }
+
+            // 2. Run Packer
+            const packer = new GuillotinePacker(packW, packH, partSpacingX, partSpacingY, config.strategy);
+            const packedIndices = new Set<number>(); // Indices relative to the *unsorted* remainingItems? No, local.
+            const packedUids = new Set<string>();
+
+            for (const item of currentItems) {
+                const bestPos = packer.findPosition(item);
+                if (bestPos) {
+                    packer.placeItem(item, bestPos.rectIndex, bestPos.rotation);
+                    packedUids.add(item.uid);
+                }
+            }
+
+            // 3. Score
+            const efficiency = calculateEfficiency(packer, packW * packH);
+            // Count items packed
+            const count = packedUids.size;
+            // Combined Score: Higher count is priority, then density.
+            // Score = count * 1000 + efficiency * 100
+            const score = count * 1000 + efficiency * 100;
+
+            // Map back to original indices
+            const originalIndices = new Set<number>();
+            remainingItems.forEach((item, idx) => {
+                if (packedUids.has(item.uid)) originalIndices.add(idx);
+            });
+
+            strategies.push({ name: config.id, packer, packedIndices: originalIndices, score });
+        }
+
+        // --- PICK WINNER ---
+        strategies.sort((a, b) => b.score - a.score);
+        const winner = strategies[0];
+        
+        // Remove packed items from main queue
+        if (winner.packedIndices.size === 0) {
+            console.warn("Item too big for sheet:", remainingItems[0]);
+            remainingItems.shift(); // Prevent infinite loop
+            continue;
+        }
+
+        remainingItems = remainingItems.filter((_, i) => !winner.packedIndices.has(i));
+
+        // Create Result Sheet from Winner
+        const packer = winner.packer;
+        
+        // Auto-Calc Width Logic
+        let finalSheetWidth = activeStock.width;
+        let maxPlacedX = 0;
+        packer.placedItems.forEach(p => {
+            const w = (p.rotation === 90) ? p.item.rotatedWidth : p.item.width;
+            if (p.x + w > maxPlacedX) maxPlacedX = p.x + w;
+        });
+        
+        const isAutoCalc = settings.utilizationStrategy === SheetUtilizationStrategy.AutoCalculation;
+        if (isAutoCalc) {
+            const requiredPhys = sheetMarginLeft + maxPlacedX + sheetMarginRight;
+            finalSheetWidth = Math.ceil(requiredPhys / 100) * 100;
+            if (finalSheetWidth > 2560) finalSheetWidth = 2560;
+        }
+
+        const usedAreaPx = packer.placedItems.reduce((sum, p) => {
+             const w = p.rotation === 90 ? p.item.rotatedWidth : p.item.width;
+             const h = p.rotation === 90 ? p.item.rotatedHeight : p.item.height;
+             return sum + (w * h);
+        }, 0);
+        const totalAreaPx = finalSheetWidth * activeStock.height;
+
+        const resultSheet: NestResultSheet = {
+            id: generateId(),
+            sheetName: isAutoCalc ? `Auto ${finalSheetWidth}x${activeStock.height} (${winner.name})` : `Sheet ${completedSheets.length + 1}`,
+            stockSheetId: activeStock.id,
+            width: finalSheetWidth,
+            height: activeStock.height,
+            material: activeStock.material,
+            thickness: activeStock.thickness,
+            placedParts: packer.placedItems.map(p => {
+                const ox = (p.rotation === 90) ? p.item.rotatedOffsetX : p.item.offsetX;
+                const oy = (p.rotation === 90) ? p.item.rotatedOffsetY : p.item.offsetY;
+                
+                return {
+                    id: generateId(),
+                    partId: p.item.partId,
+                    x: p.x + sheetMarginLeft + ox,
+                    y: p.y + sheetMarginBottom + oy,
+                    rotation: p.rotation
+                };
+            }),
+            usedArea: totalAreaPx > 0 ? (usedAreaPx / totalAreaPx) * 100 : 0,
+            scrapPercentage: totalAreaPx > 0 ? 100 - ((usedAreaPx / totalAreaPx) * 100) : 100,
+            partCount: packer.placedItems.length,
+            quantity: 1
+        };
+
+        completedSheets.push(resultSheet);
+        
+        await new Promise(resolve => setTimeout(resolve, 5));
+        yield [...completedSheets];
+    }
+}

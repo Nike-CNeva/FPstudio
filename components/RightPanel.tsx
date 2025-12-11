@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Tool, NestLayout, Part, PunchOp, ToolShape } from '../types';
 import { ToolPreview } from './common/ToolDisplay';
 import { SettingsIcon, LayersIcon, PlayIcon } from './Icons';
@@ -37,85 +37,179 @@ export const RightPanel: React.FC<RightPanelProps> = ({
 
     const filteredTools = tools.filter(t => t.name.toLowerCase().includes(searchTerm.toLowerCase()));
 
+    // --- Nesting Statistics Calculation ---
+    const nestingStats = useMemo(() => {
+        if (!activeNest || activeNest.sheets.length === 0) return null;
+
+        let totalArea = 0;
+        let totalUsedArea = 0;
+        let totalSheetsCount = 0;
+        const sheetsByDim: Record<string, number> = {};
+
+        activeNest.sheets.forEach(sheet => {
+            const sheetArea = sheet.width * sheet.height;
+            const sheetUsed = (sheet.usedArea / 100) * sheetArea;
+            
+            // Weighted by quantity of this layout
+            totalArea += sheetArea * sheet.quantity;
+            totalUsedArea += sheetUsed * sheet.quantity;
+            totalSheetsCount += sheet.quantity;
+
+            const dimKey = `${sheet.width}x${sheet.height}`;
+            sheetsByDim[dimKey] = (sheetsByDim[dimKey] || 0) + sheet.quantity;
+        });
+
+        const totalScrapPct = totalArea > 0 ? (1 - totalUsedArea / totalArea) * 100 : 0;
+
+        return {
+            totalScrapPct,
+            totalSheetsCount,
+            uniqueLayouts: activeNest.sheets.length,
+            sheetsByDim
+        };
+    }, [activeNest]);
+
+    const getPartsOnSheet = (sheetIndex: number) => {
+        if (!activeNest || !activeNest.sheets[sheetIndex]) return [];
+        const sheet = activeNest.sheets[sheetIndex];
+        const counts: Record<string, number> = {};
+        
+        sheet.placedParts.forEach(pp => {
+            counts[pp.partId] = (counts[pp.partId] || 0) + 1;
+        });
+
+        return Object.entries(counts).map(([partId, count]) => {
+            const part = allParts.find(p => p.id === partId);
+            return { name: part ? part.name : 'Unknown', count };
+        });
+    };
+
     return (
-        <aside className="w-64 bg-gray-800 border-l border-gray-700 flex flex-col h-full">
+        <aside className="w-80 bg-gray-800 border-l border-gray-700 flex flex-col h-full text-sm">
             {isNestingMode ? (
                 <div className="flex flex-col h-full">
+                    {/* Header */}
                     <div className="p-3 bg-gray-900 border-b border-gray-700">
-                        <h3 className="text-sm font-bold text-gray-300 uppercase">Результаты</h3>
+                        <h3 className="text-sm font-bold text-gray-200 uppercase tracking-wide">Отчет Раскроя</h3>
                     </div>
                     
-                    {activeNest && activeNest.sheets.length > 0 ? (
-                        <div className="p-2 space-y-4 overflow-y-auto flex-1">
-                            {/* Sheet Navigation */}
-                            <div className="bg-gray-700/50 p-2 rounded border border-gray-600">
-                                <label className="text-xs text-gray-400 block mb-2">Лист {activeSheetIndex + 1} из {activeNest.sheets.length}</label>
-                                <div className="flex space-x-1">
-                                    {activeNest.sheets.map((_, idx) => (
-                                        <button 
-                                            key={idx}
-                                            onClick={() => setActiveSheetIndex(idx)}
-                                            className={`w-6 h-6 text-xs rounded ${activeSheetIndex === idx ? 'bg-blue-600 text-white' : 'bg-gray-600 text-gray-300 hover:bg-gray-500'}`}
-                                        >
-                                            {idx + 1}
-                                        </button>
+                    {nestingStats ? (
+                        <>
+                            {/* --- 1. Global Summary --- */}
+                            <div className="p-4 bg-gray-800 border-b border-gray-700 space-y-3 shadow-md z-10 flex-none">
+                                <div className="flex justify-between items-center">
+                                    <span className="text-gray-400">Общий отход:</span>
+                                    <span className={`font-bold text-lg ${nestingStats.totalScrapPct > 20 ? 'text-red-400' : 'text-green-400'}`}>
+                                        {nestingStats.totalScrapPct.toFixed(1)}%
+                                    </span>
+                                </div>
+                                
+                                <div className="bg-gray-700/50 p-2 rounded text-xs space-y-1">
+                                    <div className="flex justify-between text-gray-300 border-b border-gray-600 pb-1 mb-1">
+                                        <span>Карт раскроя:</span>
+                                        <span className="font-bold">{nestingStats.uniqueLayouts}</span>
+                                    </div>
+                                    <div className="text-gray-400 mb-1">Расход листов:</div>
+                                    {Object.entries(nestingStats.sheetsByDim).map(([dim, count]) => (
+                                        <div key={dim} className="flex justify-between text-gray-200">
+                                            <span>{dim} мм</span>
+                                            <span className="font-mono">x{count}</span>
+                                        </div>
                                     ))}
+                                    <div className="flex justify-between text-gray-300 font-bold border-t border-gray-600 pt-1 mt-1">
+                                        <span>Всего листов:</span>
+                                        <span>{nestingStats.totalSheetsCount}</span>
+                                    </div>
                                 </div>
                             </div>
 
-                            {/* Simulation Controls */}
+                            {/* --- Split Container: Sheets & Details --- */}
+                            <div className="flex-1 flex flex-col overflow-hidden bg-gray-800">
+                                
+                                {/* 2. Scrollable Sheet List (Cards only) */}
+                                <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar">
+                                    <div className="text-[10px] font-bold text-gray-500 uppercase pl-1">Список карт</div>
+                                    {activeNest?.sheets.map((sheet, idx) => {
+                                        const isActive = idx === activeSheetIndex;
+                                        
+                                        return (
+                                            <div 
+                                                key={sheet.id}
+                                                onClick={() => setActiveSheetIndex(idx)}
+                                                className={`p-3 rounded border cursor-pointer transition-all flex justify-between items-center ${isActive ? 'bg-blue-900/30 border-blue-500 ring-1 ring-blue-500/50' : 'bg-gray-700 border-gray-600 hover:border-gray-500'}`}
+                                            >
+                                                <div>
+                                                    <div className="font-bold text-white text-xs">{sheet.sheetName || `Лист ${idx+1}`}</div>
+                                                    <div className="text-[10px] text-gray-400">{sheet.width} x {sheet.height}</div>
+                                                </div>
+                                                <div className="text-right">
+                                                    <div className="bg-gray-800 px-2 py-0.5 rounded text-white font-mono text-xs mb-1">x{sheet.quantity}</div>
+                                                    <div className={`text-[10px] font-bold ${sheet.scrapPercentage > 20 ? 'text-red-400' : 'text-green-400'}`}>
+                                                        {sheet.scrapPercentage.toFixed(1)}%
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+
+                                {/* 3. Detail Block for Selected Sheet */}
+                                <div className="h-56 bg-gray-900 border-t border-gray-700 flex flex-col flex-none">
+                                    <div className="p-2 border-b border-gray-700 bg-gray-800 flex justify-between items-center">
+                                         <h4 className="text-xs font-bold text-gray-300">Состав листа {activeSheetIndex + 1}</h4>
+                                         <span className="text-[10px] text-gray-500">{activeNest?.sheets[activeSheetIndex]?.placedParts.length || 0} деталей</span>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto p-2 space-y-1 custom-scrollbar">
+                                         {getPartsOnSheet(activeSheetIndex).map((p, i) => (
+                                             <div key={i} className="flex justify-between items-center bg-gray-800 p-2 rounded text-xs border border-gray-700 hover:bg-gray-700 transition-colors">
+                                                 <span className="text-gray-300 truncate mr-2" title={p.name}>{p.name}</span>
+                                                 <span className="font-mono font-bold text-blue-400">{p.count} шт</span>
+                                             </div>
+                                         ))}
+                                         {getPartsOnSheet(activeSheetIndex).length === 0 && (
+                                             <div className="flex items-center justify-center h-full text-gray-500 text-xs">
+                                                 Детали не найдены
+                                             </div>
+                                         )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* --- 4. Simulation Controls (Bottom Fixed) --- */}
                             {optimizedOperations && (
-                                <div className="bg-gray-700/50 p-3 rounded border border-gray-600 space-y-3">
-                                    <div className="flex justify-between items-center">
-                                        <h4 className="text-xs font-bold text-blue-400 uppercase">Симуляция</h4>
-                                        <span className="text-[10px] text-gray-400">{simulationStep} / {totalSimulationSteps}</span>
+                                <div className="p-3 bg-gray-900 border-t border-gray-700 space-y-2 flex-none">
+                                    <div className="flex justify-between items-center text-xs text-gray-400">
+                                        <span className="uppercase font-bold text-blue-400">Симуляция</span>
+                                        <span>{simulationStep} / {totalSimulationSteps}</span>
                                     </div>
                                     
+                                    <input 
+                                        type="range" 
+                                        min="0" 
+                                        max={totalSimulationSteps > 0 ? totalSimulationSteps - 1 : 0} 
+                                        value={simulationStep} 
+                                        onChange={(e) => onStepChange(parseInt(e.target.value))}
+                                        className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
+                                    />
+
                                     <div className="flex space-x-2">
                                         <button 
                                             onClick={onToggleSimulation} 
-                                            className={`flex-1 py-1 rounded text-xs font-bold text-white transition-colors ${isSimulating ? 'bg-yellow-600 hover:bg-yellow-500' : 'bg-green-600 hover:bg-green-500'}`}
+                                            className={`flex-1 py-1.5 rounded text-xs font-bold text-white transition-colors flex items-center justify-center ${isSimulating ? 'bg-yellow-600 hover:bg-yellow-500' : 'bg-green-600 hover:bg-green-500'}`}
                                         >
+                                            <PlayIcon className="w-3 h-3 mr-1"/>
                                             {isSimulating ? 'Пауза' : 'Старт'}
                                         </button>
-                                        <button onClick={onStopSimulation} className="px-2 py-1 bg-red-800 hover:bg-red-700 rounded text-xs text-white">Стоп</button>
-                                    </div>
-
-                                    <div>
-                                        <input 
-                                            type="range" 
-                                            min="0" 
-                                            max={totalSimulationSteps > 0 ? totalSimulationSteps - 1 : 0} 
-                                            value={simulationStep} 
-                                            onChange={(e) => onStepChange(parseInt(e.target.value))}
-                                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-                                        />
-                                    </div>
-
-                                    <div className="flex items-center space-x-2">
-                                        <span className="text-[10px] text-gray-400">Скорость:</span>
-                                        <input 
-                                            type="range" 
-                                            min="10" 
-                                            max="500" 
-                                            step="10"
-                                            value={simulationSpeed} // Inverse logic usually, but here ms per step
-                                            onChange={(e) => onSpeedChange(parseInt(e.target.value))}
-                                            className="flex-1 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-                                            style={{ direction: 'rtl' }} // Lower ms = faster
-                                        />
+                                        <button onClick={onStopSimulation} className="px-3 py-1.5 bg-red-800 hover:bg-red-700 rounded text-xs text-white">Стоп</button>
                                     </div>
                                 </div>
                             )}
-
-                            {/* Stats */}
-                            <div className="text-xs text-gray-400 space-y-1">
-                                <p>Использование: <span className="text-white font-bold">{activeNest.sheets[activeSheetIndex].usedArea.toFixed(1)}%</span></p>
-                                <p>Деталей: <span className="text-white">{activeNest.sheets[activeSheetIndex].partCount}</span></p>
-                            </div>
-                        </div>
+                        </>
                     ) : (
-                        <div className="p-4 text-center text-xs text-gray-500">Нет результатов раскроя</div>
+                        <div className="flex-1 flex flex-col items-center justify-center text-gray-500 p-6 text-center">
+                            <p className="mb-2">Нет результатов раскроя</p>
+                            <p className="text-xs">Запустите раскрой в левой панели для получения карт.</p>
+                        </div>
                     )}
                 </div>
             ) : (

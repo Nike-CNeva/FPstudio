@@ -395,21 +395,24 @@ export const initialNests: NestLayout[] = [
         scheduledParts: [],
         settings: {
             availableSheets: [
-                { id: defaultSheetId, width: 2500, height: 1250, material: 'St-3', thickness: 1.0, quantity: 10, cost: 0 }
+                { id: defaultSheetId, width: 2560, height: 1250, material: 'Zink', thickness: 1.0, quantity: 10, cost: 0, useInNesting: true }
             ],
             activeSheetId: defaultSheetId,
+            defaultMaterial: 'Zink',
+            defaultThickness: 1.0,
             partSpacingX: 5,
             partSpacingY: 5,
-            sheetMarginTop: 10,
-            sheetMarginBottom: 10,
-            sheetMarginLeft: 10,
-            sheetMarginRight: 10,
+            sheetMarginTop: 5,
+            sheetMarginBottom: -5,
+            sheetMarginLeft: 5,
+            sheetMarginRight: 35,
             nestingDirection: 6, // 6 = Top-left (Standard)
-            clampPositions: [300, 1000, 2000],
+            clampPositions: [420, 1250, 2080],
             nestUnderClamps: false,
             useCommonLine: false,
             vertexSnapping: true,
-            utilizationStrategy: SheetUtilizationStrategy.ListedOrder
+            utilizationStrategy: SheetUtilizationStrategy.ListedOrder,
+            loadingStopId: 0, // Auto
         }
     }
 ];

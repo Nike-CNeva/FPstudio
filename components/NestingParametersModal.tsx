@@ -13,8 +13,30 @@ interface NestingParametersModalProps {
     allParts: Part[];
 }
 
+const STOP_DEFINITIONS: Record<number, { min: number, max: number, label: string }> = {
+    1: { min: 420, max: 2080, label: 'Упор 1 (Стандарт)' },
+    2: { min: 83, max: 1743, label: 'Упор 2 (L <= 1900)' },
+    3: { min: 0, max: 1660, label: 'Упор 3 (L <= 1360)' },
+    4: { min: 0, max: 1660, label: 'Упор 4 (L < 750)' },
+};
+
+const resolveAutoStop = (width: number) => {
+    if (width < 750) return 4;
+    if (width <= 1360) return 3;
+    if (width <= 1900) return 2;
+    return 1;
+};
+
 const GlobalParametersTab: React.FC<{ settings: NestLayout['settings'], setSettings: React.Dispatch<React.SetStateAction<NestLayout['settings']>> }> = ({ settings, setSettings }) => {
     
+    // Determine active sheet width for validation context
+    const activeSheet = settings.availableSheets.find(s => s.id === settings.activeSheetId) || settings.availableSheets[0];
+    const sheetWidth = activeSheet ? activeSheet.width : 2560;
+
+    // Resolve current active stop
+    const activeStopId = settings.loadingStopId === 0 ? resolveAutoStop(sheetWidth) : settings.loadingStopId;
+    const activeStopInfo = STOP_DEFINITIONS[activeStopId];
+
     const updateMargin = (field: keyof NestLayout['settings'], value: number) => {
         setSettings(prev => ({ ...prev, [field]: value }));
     };
@@ -24,6 +46,24 @@ const GlobalParametersTab: React.FC<{ settings: NestLayout['settings'], setSetti
         newClamps[index] = parseFloat(value) || 0;
         setSettings(prev => ({...prev, clampPositions: newClamps}));
     }
+
+    const validateClamp = (pos: number, index: number, allClamps: number[]): string | null => {
+        if (!pos) return null;
+        if (pos < activeStopInfo.min || pos > activeStopInfo.max) {
+            return `Выход за пределы (${activeStopInfo.min}-${activeStopInfo.max})`;
+        }
+        
+        // Check distance to other clamps
+        for (let i = 0; i < allClamps.length; i++) {
+            if (i === index || !allClamps[i]) continue;
+            if (Math.abs(pos - allClamps[i]) < 150) {
+                return `Конфликт с зажимом ${i+1} (<150мм)`;
+            }
+        }
+        return null;
+    };
+
+    const errors = settings.clampPositions.map((c, i) => validateClamp(c, i, settings.clampPositions));
 
     return (
         <div className="grid grid-cols-2 gap-x-8 gap-y-4">
@@ -65,15 +105,43 @@ const GlobalParametersTab: React.FC<{ settings: NestLayout['settings'], setSetti
             </div>
              <div className="space-y-4">
                 <fieldset className="border border-gray-600 p-3 rounded-md">
-                    <legend className="px-2 font-semibold text-gray-300">Информация о прижимах</legend>
+                    <legend className="px-2 font-semibold text-gray-300">Информация о прижимах и Упорах</legend>
+                    
+                    <div className="mb-4 bg-gray-700/30 p-2 rounded">
+                        <label className="block text-sm font-medium text-gray-300 mb-1">Выбор Упора (Loading Stop)</label>
+                        <select 
+                            value={settings.loadingStopId} 
+                            onChange={(e) => setSettings(s => ({...s, loadingStopId: parseInt(e.target.value)}))}
+                            className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm text-gray-200"
+                        >
+                            <option value={0}>Автоматически (по ширине листа)</option>
+                            <option value={1}>Упор 1 (420 - 2080)</option>
+                            <option value={2}>Упор 2 (83 - 1743)</option>
+                            <option value={3}>Упор 3 (0 - 1660)</option>
+                            <option value={4}>Упор 4 (0 - 1660)</option>
+                        </select>
+                        <div className="mt-2 text-xs text-gray-400 flex justify-between">
+                            <span>Активный: <strong className="text-blue-400">{activeStopInfo.label}</strong></span>
+                            <span>Диапазон: {activeStopInfo.min} - {activeStopInfo.max} мм</span>
+                        </div>
+                    </div>
+
                     <div className="grid grid-cols-3 gap-2">
-                        <ModalInputField label="Позиция 1" type="number" value={settings.clampPositions[0] || ''} onChange={e => updateClamp(0, e.target.value)} />
-                        <ModalInputField label="Позиция 2" type="number" value={settings.clampPositions[1] || ''} onChange={e => updateClamp(1, e.target.value)} />
-                        <ModalInputField label="Позиция 3" type="number" value={settings.clampPositions[2] || ''} onChange={e => updateClamp(2, e.target.value)} />
+                        {[0, 1, 2].map(idx => (
+                            <div key={idx}>
+                                <ModalInputField 
+                                    label={`Позиция ${idx+1}`} 
+                                    type="number" 
+                                    value={settings.clampPositions[idx] || ''} 
+                                    onChange={e => updateClamp(idx, e.target.value)} 
+                                />
+                                {errors[idx] && <p className="text-[10px] text-red-400 mt-1 leading-tight">{errors[idx]}</p>}
+                            </div>
+                        ))}
                     </div>
                      <label className="flex items-center space-x-2 mt-3 cursor-pointer">
                         <input type="checkbox" checked={settings.nestUnderClamps} onChange={e => setSettings(s => ({...s, nestUnderClamps: e.target.checked}))} className="form-checkbox h-4 w-4 text-blue-600 bg-gray-800 border-gray-500" />
-                        <span>Раскладывать под прижимами</span>
+                        <span>Раскладывать под прижимами (Опасно)</span>
                     </label>
                 </fieldset>
 
@@ -181,12 +249,13 @@ const MaterialSheetTab: React.FC<{ settings: NestLayout['settings'], setSettings
     const addSheet = () => {
         const newSheet: SheetStock = {
             id: generateId(),
-            width: 2500,
+            width: 2560, // Changed from 2500 to 2560 per request
             height: 1250,
             thickness: 1.0,
-            material: 'St-3',
+            material: 'Zink', // Changed from St-3 to Zink
             quantity: 1,
-            cost: 0
+            cost: 0,
+            useInNesting: true
         };
         setSettings(prev => ({
             ...prev,
@@ -315,8 +384,8 @@ const MaterialSheetTab: React.FC<{ settings: NestLayout['settings'], setSettings
                             <input 
                                 type="radio" 
                                 name="utilization" 
-                                checked={settings.utilizationStrategy === SheetUtilizationStrategy.Smallest} 
-                                onChange={() => setSettings(s => ({...s, utilizationStrategy: SheetUtilizationStrategy.Smallest}))}
+                                checked={settings.utilizationStrategy === SheetUtilizationStrategy.SmallestFirst} 
+                                onChange={() => setSettings(s => ({...s, utilizationStrategy: SheetUtilizationStrategy.SmallestFirst}))}
                                 className="form-radio h-3 w-3 text-blue-600" 
                             />
                             <span>Use smallest</span>
