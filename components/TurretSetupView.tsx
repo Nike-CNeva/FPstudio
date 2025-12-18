@@ -127,9 +127,6 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
         setLayouts(prev => prev.map(l => l.id === activeLayoutId ? { ...l, toolsSnapshot: updatedTools } : l));
     };
 
-    // 24 slots for MT visualization
-    const mtSlots = Array.from({ length: 24 }, (_, i) => i + 1);
-
     const selectedStation = currentStations.find(s => s.id === selectedStationId);
     
     const activeTool = isMtView 
@@ -140,25 +137,23 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
     const mtTools = isMtView ? toolsOnTurret.filter(t => t.stationNumber === selectedStationId) : [];
 
     return (
-        <div className="flex h-full bg-gray-100 text-gray-900 font-sans">
+        <div className="flex h-full w-full bg-gray-100 text-gray-900 font-sans">
             <div className="flex-1 relative bg-gray-300 shadow-inner overflow-hidden flex items-center justify-center">
+                 
+                 {/* Visualizer Container */}
                  {isMtView ? (
-                     <div className="w-full h-full flex flex-col relative">
-                        <div className="absolute top-4 left-4 z-10">
-                            <button onClick={() => setIsMtView(false)} className="bg-gray-600 text-white px-3 py-1 rounded shadow text-sm">
-                                &larr; Назад
-                            </button>
-                        </div>
-                        <div className="flex-1 p-4">
-                            <MtVisualizer 
-                                tools={mtTools}
-                                selectedSlotId={selectedMtSlotId}
-                                onSlotClick={setSelectedMtSlotId}
-                            />
-                        </div>
-                     </div>
+                    <div className="w-full h-full flex flex-col relative p-8">
+                        <button onClick={() => setIsMtView(false)} className="absolute top-4 left-4 bg-gray-600 hover:bg-gray-500 text-white px-3 py-1 rounded shadow text-sm transition-colors z-10">
+                            &larr; Назад
+                        </button>
+                        <MtVisualizer 
+                            tools={mtTools}
+                            selectedSlotId={selectedMtSlotId}
+                            onSlotClick={setSelectedMtSlotId}
+                        />
+                    </div>
                  ) : (
-                     <div className="w-full h-full p-4">
+                    <div className="w-full h-full p-8">
                         <TurretVisualizer 
                             stations={currentStations}
                             tools={toolsOnTurret}
@@ -166,7 +161,7 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = ({ tools, setTool
                             onStationClick={handleStationClick}
                             mode="setup"
                         />
-                     </div>
+                    </div>
                  )}
             </div>
 

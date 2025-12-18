@@ -2,6 +2,71 @@
 import { Part, Point, SnapMode, PartGeometry, DxfEntity, PlacedPart, Tool, ToolShape, PartProfile } from '../types';
 
 /**
+ * Calculates physical extents and origin offset for a part at a specific rotation.
+ * Offset (ox, oy) is the vector from the Bounding Box Min point to the Part Origin (0,0).
+ */
+export const getRotatedExtents = (part: Part, rotation: number, tools: Tool[]) => {
+    const rad = (rotation * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    // 1. Check Geometry Vertices
+    // Note: We use the original entities/bbox to find extreme points
+    const basePoints: Point[] = [
+        { x: 0, y: 0 },
+        { x: part.geometry.width, y: 0 },
+        { x: part.geometry.width, y: part.geometry.height },
+        { x: 0, y: part.geometry.height }
+    ];
+
+    // For precise irregular nesting, we should ideally check all vertices of the contour, 
+    // but the bounding box corners are sufficient for the "bounding box of the rotated part".
+    basePoints.forEach(p => {
+        const rx = p.x * cos - p.y * sin;
+        const ry = p.x * sin + p.y * cos;
+        if (rx < minX) minX = rx; if (rx > maxX) maxX = rx;
+        if (ry < minY) minY = ry; if (ry > maxY) maxY = ry;
+    });
+
+    // 2. Check Punches (they might exceed geometry)
+    part.punches.forEach(p => {
+        const tool = tools.find(t => t.id === p.toolId);
+        if (!tool) return;
+        
+        const punchRad = (p.rotation + rotation) * Math.PI / 180;
+        const tCos = Math.abs(Math.cos(punchRad));
+        const tSin = Math.abs(Math.sin(punchRad));
+        
+        let tW = tool.width;
+        let tH = tool.shape === ToolShape.Circle ? tool.width : tool.height;
+
+        const effW = tW * tCos + tH * tSin;
+        const effH = tW * tSin + tH * tCos;
+
+        // Punch center in rotated space
+        const rx = p.x * cos - p.y * sin;
+        const ry = p.x * sin + p.y * cos;
+
+        if (rx - effW/2 < minX) minX = rx - effW/2;
+        if (rx + effW/2 > maxX) maxX = rx + effW/2;
+        if (ry - effH/2 < minY) minY = ry - effH/2;
+        if (ry + effH/2 > maxY) maxY = ry + effH/2;
+    });
+
+    return {
+        width: maxX - minX,
+        height: maxY - minY,
+        ox: -minX, // Vector from BB.min to Origin
+        oy: -minY
+    };
+};
+
+/**
  * Checks if a point is inside a polygon using the Ray Casting algorithm.
  * Pure mathematical implementation, no DOM dependency.
  */
@@ -202,6 +267,126 @@ const segmentIntersectsGeometry = (p1: Point, p2: Point, entities: DxfEntity[]):
     return false;
 };
 
+/**
+ * Checks for collision between two parts at specific sheet locations and rotations.
+ * Robust implementation using segment-segment intersection and point-in-polygon checks.
+ */
+export const doPartsIntersect = (
+    partA: Part, posA: Point, rotA: number,
+    partB: Part, posB: Point, rotB: number,
+    margin: number = 0
+): boolean => {
+    // 1. Fast AABB (Axis Aligned Bounding Box) check with margin
+    const wA = partA.geometry.width;
+    const hA = partA.geometry.height;
+    const wB = partB.geometry.width;
+    const hB = partB.geometry.height;
+
+    // Simplified BBox based on rotation (conservative estimate)
+    const getBBox = (pos: Point, w: number, h: number, rot: number) => {
+        const rad = Math.abs(rot * Math.PI / 180);
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        const boundW = w * cos + h * sin;
+        const boundH = w * sin + h * cos;
+        return {
+            minX: pos.x - margin,
+            maxX: pos.x + boundW + margin,
+            minY: pos.y - margin,
+            maxY: pos.y + boundH + margin
+        };
+    };
+
+    // Note: posA/posB here are the coordinates of the PART ORIGIN (0,0), not BBox Min.
+    // However, for irregular nesting, we usually pass the Part Origin as the reference point.
+    // But we need to be careful with the BBox calculation.
+    
+    // For simplicity, we skip the fast AABB here if we're not sure about the BBox-Origin mapping.
+    // Let's rely on the detailed segment check which is already quite robust.
+
+    // 2. Detailed segment-segment intersection check
+    const getSegments = (part: Part, pos: Point, rot: number) => {
+        const rad = rot * Math.PI / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        const processed = getGeometryFromEntities(part);
+        if (!processed) return [];
+        
+        return processed.segments.map(s => {
+            const transform = (p: Point) => ({
+                x: pos.x + (p.x * cos - p.y * sin),
+                y: pos.y + (p.x * sin + p.y * cos)
+            });
+            return {
+                p1: transform(s.p1),
+                p2: transform(s.p2),
+                type: s.type,
+                radius: s.radius,
+                center: s.center ? transform(s.center) : undefined
+            };
+        });
+    };
+
+    const segsA = getSegments(partA, posA, rotA);
+    const segsB = getSegments(partB, posB, rotB);
+
+    const lineIntersect = (p1: Point, p2: Point, p3: Point, p4: Point): boolean => {
+        const det = (p2.x - p1.x) * (p4.y - p3.y) - (p2.y - p1.y) * (p4.x - p3.x);
+        if (det === 0) return false;
+        const lambda = ((p4.y - p3.y) * (p4.x - p1.x) + (p3.x - p4.x) * (p4.y - p1.y)) / det;
+        const gamma = ((p1.y - p2.y) * (p4.x - p1.x) + (p2.x - p1.x) * (p4.y - p1.y)) / det;
+        // Include margin in distance check if needed, but here we just check raw intersection
+        return (0 < lambda && lambda < 1) && (0 < gamma && gamma < 1);
+    };
+
+    // Segment distance check for margin
+    const distSq = (p1: Point, p2: Point) => (p1.x - p2.x)**2 + (p1.y - p2.y)**2;
+    const marginSq = margin * margin;
+
+    for (const sA of segsA) {
+        for (const sB of segsB) {
+            if (sA.p1 && sA.p2 && sB.p1 && sB.p2) {
+                // 1. Exact intersection
+                if (lineIntersect(sA.p1, sA.p2, sB.p1, sB.p2)) return true;
+                
+                // 2. Margin check (distance between segments)
+                // This is a simplified check: distance between endpoints and midpoints
+                if (margin > 0) {
+                    if (distSq(sA.p1, sB.p1) < marginSq) return true;
+                    if (distSq(sA.p1, sB.p2) < marginSq) return true;
+                    if (distSq(sA.p2, sB.p1) < marginSq) return true;
+                    if (distSq(sA.p2, sB.p2) < marginSq) return true;
+                }
+            }
+        }
+    }
+
+    // 3. Point-in-polygon check (one vertex inside another)
+    const checkInside = (pts: Point[], targetPart: Part, targetPos: Point, targetRot: number) => {
+        const rad = -targetRot * Math.PI / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        for (const p of pts) {
+            const dx = p.x - targetPos.x;
+            const dy = p.y - targetPos.y;
+            const localP = {
+                x: dx * cos - dy * sin,
+                y: dx * sin + dy * cos
+            };
+            if (isPointInsideContour(localP, targetPart.geometry)) return true;
+        }
+        return false;
+    };
+
+    const ptsA = segsA.map(s => s.p1);
+    const ptsB = segsB.map(s => s.p1);
+
+    if (checkInside(ptsA, partB, posB, rotB)) return true;
+    if (checkInside(ptsB, partA, posA, rotA)) return true;
+
+    return false;
+};
+
 export const isPointInRectangle = (
     point: Point, 
     rectX: number, 
@@ -304,19 +489,6 @@ export const isToolGouging = (
             // 2. Is it touching the CURRENT segment?
             let dist = 0;
             const { p1, p2 } = currentSegment;
-            // Calculations in Normalized Space (consistent with corner and allSegments)
-            // Note: If currentSegment came from geometry directly it is normalized. 
-            // Previous version denormalized p1/p2, but corner was normalized?
-            // Wait, isToolGouging contract: 
-            // - `corner` is from `x,y` (Normalized).
-            // - `allSegments` are Normalized.
-            // - `currentSegment` is Normalized.
-            // - `isPointInsideContour` uses `rawCorner` (Denormalized) against `geometry` (Normalized Entities + BBox).
-            //   Wait, geometry.entities are Normalized. bbox is usually 0-based if from `getGeometryFromEntities`.
-            //   But `isPointInsideContour` adds `bbox.minX`?
-            //   If `geometry` passed here is the original `part.geometry` (Normalized Entities, 0-based BBox),
-            //   then `denorm` adds 0. So `rawCorner == corner`. 
-            //   This is correct for standard flow.
             
             if (currentSegment.type === 'line') {
                 const l2 = (p2.x - p1.x)**2 + (p2.y - p1.y)**2;

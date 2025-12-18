@@ -314,74 +314,8 @@ export const initialTurretLayouts: TurretLayout[] = [
 
 export const initialParts: Part[] = [];
 
-export const DEFAULT_PARAMETRIC_SCRIPT = `
-// Initialization
-Part.SetMaterial("Zink", 0.7000);
-
-// ---------------------------------------------------
-// GEOMETRY
-// ---------------------------------------------------
-
-// Inside hole:
-Part.StartContour(28.5000, Width - 8.0000);
-Part.LineTo(33.5000, Width - 8.0000);
-Part.ArcTo(33.5000, Width - 5.5000, 33.5000, Width - 3.0000, false);
-Part.LineTo(28.5000, Width - 3.0000);
-Part.ArcTo(28.5000, Width - 5.5000, 28.5000, Width - 8.0000, false);
-
-// Outside contour:
-Part.StartContour(0.0000, 48.0000);
-Part.LineTo(0.0000, Width - 34.5000);
-Part.LineTo(20.0000, Width - 34.5000);
-Part.ArcTo(21.0000, Width - 34.5000, 21.0000, Width - 33.5000, false);
-Part.LineTo(21.0000, Width);
-Part.LineTo(Length - 21.0000, Width);
-Part.LineTo(Length - 21.0000, Width - 33.5000);
-Part.ArcTo(Length - 21.0000, Width - 34.5000, Length - 20.0000, Width - 34.5000, false);
-Part.LineTo(Length, Width - 34.5000);
-Part.LineTo(Length, 48.0000);
-Part.LineTo(Length - 8.5000, 48.0000);
-Part.LineTo(Length - 8.5000, 33.0000);
-Part.LineTo(Length - 21.0000, 33.0000);
-Part.ArcTo(Length - 22.0000, 33.0000, Length - 22.0000, 32.0000, false);
-Part.LineTo(Length - 22.0000, 24.0000);
-Part.LineTo(Length - 81.0000, 24.0000);
-Part.LineTo(Length - 81.0000, 0.0000);
-Part.LineTo(Length / 2 + 60.0000, 0.0000);
-Part.LineTo(Length / 2 + 60.0000, 24.0000);
-Part.LineTo(Length / 2 - 60.0000, 24.0000);
-Part.LineTo(Length / 2 - 60.0000, 0.0000);
-Part.LineTo(81.0000, 0.0000);
-Part.LineTo(81.0000, 24.0000);
-Part.LineTo(22.0000, 24.0000);
-Part.LineTo(22.0000, 32.0000);
-Part.ArcTo(22.0000, 33.0000, 21.0000, 33.0000, false);
-Part.LineTo(8.5000, 33.0000);
-Part.LineTo(8.5000, 48.0000);
-Part.LineTo(0.0000, 48.0000);
-
-// ---------------------------------------------------
-// TOOLING
-// ---------------------------------------------------
-
-// Example Tooling
-Part.Strike("RND_2_MT 3 32128", 21.0000, Width - 34.5000, 0.00);
-Part.Strike("RND_2_MT 3 32128", Length - 21.0000, Width - 34.5000, 0.00);
-Part.Strike("RND_2_MT 3 32128", 22.0000, 33.0000, 0.00);
-Part.Strike("RND_2_MT 3 32128", Length - 22.0000, 33.0000, 0.00);
-Part.NibbleLine("RECT_5X30 3 32128", 18.5000, Width - 19.5000, 18.5000, Width - 16.0000, 90.00, 3.5000);
-`;
-
-export const initialScripts: ParametricScript[] = [
-    {
-        id: 'script_demo',
-        name: 'Пример коробки (Demo Box)',
-        defaultWidth: 600,
-        defaultHeight: 400,
-        updatedAt: Date.now(),
-        code: DEFAULT_PARAMETRIC_SCRIPT
-    }
-];
+// FIX: Added missing initialScripts export to resolve import error in App.tsx
+export const initialScripts: ParametricScript[] = [];
 
 const defaultSheetId = generateId();
 
@@ -413,6 +347,7 @@ export const initialNests: NestLayout[] = [
             vertexSnapping: true,
             utilizationStrategy: SheetUtilizationStrategy.ListedOrder,
             loadingStopId: 0, // Auto
+            nestAsRectangle: true
         }
     }
 ];

@@ -61,7 +61,6 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
         if (pos < activeStopInfo.min || pos > activeStopInfo.max) {
             return `Выход за пределы (${activeStopInfo.min}-${activeStopInfo.max})`;
         }
-        // Check distance to other clamps (optional check, good to have)
         for (let i = 0; i < allClamps.length; i++) {
             if (i === index || !allClamps[i]) continue;
             if (Math.abs(pos - allClamps[i]) < 150) {
@@ -98,14 +97,11 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
     };
 
     // --- SHEET LOGIC ---
-    
-    // Updates global material setting AND propagates to all sheet items for consistency
     const updateGlobalMaterial = (val: string) => {
         const updatedSheets = settings.availableSheets.map(s => ({...s, material: val}));
         updateSettings({ defaultMaterial: val, availableSheets: updatedSheets });
     };
 
-    // Updates global thickness setting AND propagates to all sheet items
     const updateGlobalThickness = (val: number) => {
         const updatedSheets = settings.availableSheets.map(s => ({...s, thickness: val}));
         updateSettings({ defaultThickness: val, availableSheets: updatedSheets });
@@ -114,10 +110,10 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
     const addSheet = () => {
         const newSheet: SheetStock = { 
             id: generateId(), 
-            width: 2560, // Changed from 2500 to 2560
+            width: 2560, 
             height: 1250, 
             thickness: settings.defaultThickness || 1.0, 
-            material: settings.defaultMaterial || 'Zink', // Changed from St-3 to Zink
+            material: settings.defaultMaterial || 'Zink', 
             quantity: 10, 
             cost: 0, 
             useInNesting: true 
@@ -143,7 +139,6 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
         updateSettings({ availableSheets: sheets });
     };
 
-    // --- SAVE / LOAD PROJECT ---
     const handleSaveProject = () => {
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(activeNest));
         const downloadAnchorNode = document.createElement('a');
@@ -256,6 +251,22 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
                 {activeTab === 'params' && (
                     <div className="space-y-4">
                         <fieldset className="border border-gray-600 p-2 rounded bg-gray-800/50">
+                            <legend className="text-xs font-bold text-blue-400 px-1">Алгоритм</legend>
+                            <label className="flex items-center space-x-2 cursor-pointer p-1 rounded hover:bg-gray-700/50 transition-colors">
+                                <input 
+                                    type="checkbox" 
+                                    checked={settings.nestAsRectangle} 
+                                    onChange={e => updateSettings({nestAsRectangle: e.target.checked})} 
+                                    className="form-checkbox h-4 w-4 text-blue-600 bg-gray-900 border-gray-500" 
+                                />
+                                <span className="text-xs text-white">Раскладывать прямоугольником</span>
+                            </label>
+                            <p className="text-[10px] text-gray-400 mt-1 pl-6 italic">
+                                Отключите для плотной укладки деталей сложной формы.
+                            </p>
+                        </fieldset>
+
+                        <fieldset className="border border-gray-600 p-2 rounded bg-gray-800/50">
                             <legend className="text-xs font-bold text-blue-400 px-1">Зазор и Отступы</legend>
                             <div className="grid grid-cols-2 gap-2 mb-2">
                                 <ModalInputField label="Зазор X" type="number" value={settings.partSpacingX} onChange={e => updateSettings({partSpacingX: parseFloat(e.target.value)||0})} />
@@ -335,8 +346,6 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
                 {/* --- SHEET TAB --- */}
                 {activeTab === 'sheet' && (
                     <div className="space-y-4">
-                        
-                        {/* 1. Strategy Section (Top) */}
                         <fieldset className="border border-gray-600 p-2 rounded bg-gray-800/50">
                             <legend className="text-xs font-bold text-blue-400 px-1">Стратегия выбора</legend>
                             <div className="space-y-1 text-[10px]">
@@ -396,7 +405,6 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
                             </div>
                         </fieldset>
 
-                        {/* 2. Global Material/Thickness Section */}
                         <div className="bg-gray-800 p-2 rounded border border-gray-600">
                             <h4 className="text-xs font-bold text-gray-400 mb-2">Параметры материала (для всех)</h4>
                             <div className="grid grid-cols-2 gap-2">
@@ -414,7 +422,6 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
                             </div>
                         </div>
 
-                        {/* 3. Sheet List Section */}
                         <div className="space-y-2">
                             <div className="flex justify-between items-center mb-1">
                                 <span className="text-xs font-bold text-gray-400">Список Листов</span>
@@ -428,7 +435,6 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
                                     <div key={sheet.id} className={`p-2 rounded border text-xs ${settings.activeSheetId === sheet.id ? 'bg-blue-900/20 border-blue-500' : 'bg-gray-800 border-gray-600'}`}>
                                         
                                         <div className="flex items-center gap-2 mb-1">
-                                            {/* Checkbox for "Selected Only" strategy */}
                                             <input 
                                                 type="checkbox" 
                                                 checked={sheet.useInNesting} 
@@ -436,21 +442,14 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
                                                 className="form-checkbox h-3 w-3 text-blue-500 flex-shrink-0"
                                                 title="Использовать"
                                             />
-                                            
-                                            {/* ID / Name Readonly Display */}
                                             <span className="font-mono text-gray-400 truncate flex-1" title={sheet.id}>#{idx+1}</span>
-
-                                            {/* Ordering Buttons */}
                                             <div className="flex space-x-1">
                                                 <button onClick={() => moveSheet(idx, 'up')} className="text-gray-400 hover:text-white" disabled={idx === 0}>▲</button>
                                                 <button onClick={() => moveSheet(idx, 'down')} className="text-gray-400 hover:text-white" disabled={idx === settings.availableSheets.length - 1}>▼</button>
                                             </div>
-                                            
-                                            {/* Delete Button */}
                                             <button onClick={() => removeSheet(sheet.id)} className="text-red-500 hover:bg-gray-700 p-0.5 rounded"><TrashIcon className="w-3 h-3"/></button>
                                         </div>
                                         
-                                        {/* Simplified Inputs: W, H, Qty */}
                                         <div className="grid grid-cols-[1fr_1fr_0.6fr] gap-2 items-end">
                                             <div>
                                                 <label className="block text-[9px] text-gray-500 mb-0.5">Ширина</label>

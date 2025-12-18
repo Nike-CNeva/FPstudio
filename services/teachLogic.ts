@@ -4,18 +4,10 @@ import { TeachCycle, Part, PlacedTool, Point, CycleSymmetry, PatternSegment, Pat
 import { ProcessedGeometry, Segment } from './geometry';
 
 // ENABLE DEBUGGING HERE
-const DEBUG_TEACH = true;
+const DEBUG_TEACH = false;
 
 const debugLog = (msg: string, ...args: any[]) => {
     if (DEBUG_TEACH) console.log(`%c[TeachLogic] ${msg}`, 'color: #bada55', ...args);
-};
-
-const debugGroup = (label: string) => {
-    if (DEBUG_TEACH) console.groupCollapsed(`%c[TeachLogic] ${label}`, 'color: #dda0dd');
-};
-
-const debugGroupEnd = () => {
-    if (DEBUG_TEACH) console.groupEnd();
 };
 
 // Helper: Distance squared
@@ -23,7 +15,7 @@ const distSq = (p1: Point, p2: Point) => (p1.x - p2.x)**2 + (p1.y - p2.y)**2;
 const dist = (p1: Point, p2: Point) => Math.sqrt(distSq(p1, p2));
 
 /**
- * Helper to normalize angle to -180..180
+ * Normalizes angle to -180..180
  */
 const normalizeAngle = (deg: number) => {
     let d = deg;
@@ -38,10 +30,7 @@ const isCenterLeft = (a: Point, b: Point, c: Point): boolean => {
 };
 
 /**
- * Checks if a punch is aligned with a line segment.
- * Returns metadata about the alignment (longitudinal t-value and lateral distance).
- * 
- * @param maxLatDist Maximum lateral distance to consider "aligned" (handles tool offset)
+ * Checks if a punch is aligned with a line segment for topology grouping.
  */
 const isPunchAlignedWithSegment = (p: {x: number, y: number}, seg: Segment, maxLatDist: number = 50.0): { aligned: boolean, t: number, dist: number } => {
     if (seg.type !== 'line') return { aligned: false, t: 0, dist: 0 };
@@ -52,27 +41,19 @@ const isPunchAlignedWithSegment = (p: {x: number, y: number}, seg: Segment, maxL
     
     if (l2 === 0) return { aligned: false, t: 0, dist: 0 };
 
-    // Projection parameter t (0 = p1, 1 = p2)
     const t = ((p.x - seg.p1.x) * dx + (p.y - seg.p1.y) * dy) / l2;
-    
-    // Allow significant extension beyond line ends (e.g. for start/end nibbles)
-    // Range -0.5 to 1.5 allows extension up to 50% of line length on either side
     if (t < -0.5 || t > 1.5) return { aligned: false, t, dist: 0 };
 
-    // Signed distance calculation (Cross product / Length)
     const cross = dx * (p.y - seg.p1.y) - dy * (p.x - seg.p1.x);
-    const dist = cross / Math.sqrt(l2);
+    const distVal = cross / Math.sqrt(l2);
 
-    // Check lateral distance
-    if (Math.abs(dist) > maxLatDist) return { aligned: false, t, dist };
+    if (Math.abs(distVal) > maxLatDist) return { aligned: false, t, dist: distVal };
 
-    return { aligned: true, t, dist };
+    return { aligned: true, t, dist: distVal };
 };
 
 /**
- * Groups punches based on their adherence to the specific contour segments involved in the match.
- * Uses a "Best Fit" strategy: each punch is assigned to the closest valid segment, 
- * ensuring that adjacent horizontal/vertical lines don't "steal" each other's punches.
+ * Groups punches based on their adherence to the matched contour segments.
  */
 const groupPunchesByTopology = (
     punches: Omit<PlacedTool, 'id'>[], 
@@ -80,12 +61,9 @@ const groupPunchesByTopology = (
     cycleName: string
 ): Omit<PlacedTool, 'id'>[] => {
     
-    // Map to store best segment assignment for each punch
-    // Key: Punch object reference
     const assignments = new Map<Omit<PlacedTool, 'id'>, { segIdx: number, dist: number, signedOffset: number }>();
-    const MAX_LATERAL_DIST = 20.0; // Tighter tolerance to prevent cross-talk
+    const MAX_LATERAL_DIST = 20.0;
 
-    // 1. Assign each punch to its closest aligned segment
     punches.forEach(p => {
         let bestSegIdx = -1;
         let minAbsDist = Infinity;
@@ -110,24 +88,18 @@ const groupPunchesByTopology = (
         }
     });
 
-    // 2. Group punches by their assigned Segment
     const segmentGroups = new Map<number, Omit<PlacedTool, 'id'>[]>();
     assignments.forEach((info, p) => {
         if (!segmentGroups.has(info.segIdx)) segmentGroups.set(info.segIdx, []);
         segmentGroups.get(info.segIdx)!.push(p);
     });
 
-    // 3. Process each segment group to create "Nibble Lines"
     segmentGroups.forEach((groupPunches, segIdx) => {
         const seg = matchedSegments[segIdx];
-        
-        // Sub-group by Tool, Rotation, and Lateral Offset
-        // This ensures separate lines for inner vs outer nibbling, or different tools on same line
         const subGroups = new Map<string, Omit<PlacedTool, 'id'>[]>();
 
         groupPunches.forEach(p => {
             const info = assignments.get(p)!;
-            // Round offset to 0.1mm to group standard nibbles while separating distinct offsets
             const offsetKey = Math.round(info.signedOffset * 10) / 10;
             const rotKey = Math.round(p.rotation * 100) / 100;
             const key = `${p.toolId}_${rotKey}_${offsetKey}`;
@@ -138,9 +110,7 @@ const groupPunchesByTopology = (
 
         subGroups.forEach(subGroup => {
             if (subGroup.length >= 2) {
-                // Sort by position along the line to ensure correct order
                 subGroup.sort((a, b) => distSq(a, seg.p1) - distSq(b, seg.p1));
-                
                 const lineId = `teach_${cycleName}_${generateId()}`;
                 subGroup.forEach(p => {
                     p.lineId = lineId;
@@ -149,14 +119,41 @@ const groupPunchesByTopology = (
         });
     });
 
-    // Return modified punches (references updated with lineId)
     return punches;
 };
 
-/**
- * Normalizes a selection of geometry and punches into a generic Pattern.
- * Automatically sorts and oients selected segments into a continuous chain.
- */
+// --- GEOMETRY RECONSTRUCTION HELPERS ---
+
+// Reconstruct explicit points of the pattern chain starting at (0,0)
+const reconstructPatternGeometry = (segments: PatternSegment[]): { p1: Point, p2: Point }[] => {
+    const result: { p1: Point, p2: Point }[] = [];
+    let curX = 0; 
+    let curY = 0;
+    let curAngle = 0; // Radians. Segment 0 starts at angle 0 relative to itself.
+
+    segments.forEach((seg, idx) => {
+        // Apply angle change relative to previous segment vector
+        if (idx > 0) {
+            curAngle += seg.angleChange * (Math.PI / 180);
+        }
+        
+        const dx = Math.cos(curAngle) * seg.length;
+        const dy = Math.sin(curAngle) * seg.length;
+        const nextX = curX + dx;
+        const nextY = curY + dy;
+
+        result.push({ 
+            p1: { x: curX, y: curY }, 
+            p2: { x: nextX, y: nextY } 
+        });
+
+        curX = nextX;
+        curY = nextY;
+    });
+    return result;
+};
+
+// --- CREATE CYCLE ---
 export const createTeachCycleFromSelection = (
     name: string,
     symmetry: CycleSymmetry,
@@ -167,20 +164,13 @@ export const createTeachCycleFromSelection = (
 ): TeachCycle | null => {
     if (selectedSegmentIndices.length === 0 || selectedPunchIds.length === 0) return null;
 
-    debugGroup(`Creating Cycle: ${name}`);
-
-    // 1. Extract Segments
+    // 1. Build Chain
     const pool = selectedSegmentIndices.map(idx => ({ 
         seg: processedGeometry.segments[idx], 
-        originalIndex: idx, 
-        used: false,
-        reverse: false 
+        originalIndex: idx, used: false, reverse: false 
     }));
 
-    // 2. Build Chain (Greedy search for continuity)
     const chain: typeof pool = [];
-    
-    // Start with the first selected segment (arbitrary start)
     const seed = pool[0];
     seed.used = true;
     chain.push(seed);
@@ -188,136 +178,104 @@ export const createTeachCycleFromSelection = (
     let headPoint = seed.seg.p2;
     let tailPoint = seed.seg.p1;
 
-    // Extend Head (Forward)
+    // Greedy Chain Sort
+    // Forward
     while(true) {
         let found = false;
         for (const candidate of pool) {
             if (candidate.used) continue;
-            
-            // Check connectivity to headPoint
             if (distSq(headPoint, candidate.seg.p1) < 0.1) {
-                candidate.reverse = false;
-                candidate.used = true;
-                chain.push(candidate);
-                headPoint = candidate.seg.p2;
-                found = true;
-                break;
+                candidate.reverse = false; candidate.used = true;
+                chain.push(candidate); headPoint = candidate.seg.p2; found = true; break;
             } else if (distSq(headPoint, candidate.seg.p2) < 0.1) {
-                candidate.reverse = true;
-                candidate.used = true;
-                chain.push(candidate);
-                headPoint = candidate.seg.p1; // Reversed
-                found = true;
-                break;
+                candidate.reverse = true; candidate.used = true;
+                chain.push(candidate); headPoint = candidate.seg.p1; found = true; break;
             }
         }
         if (!found) break;
     }
-
-    // Extend Tail (Backward - Prepend)
+    // Backward
     while(true) {
         let found = false;
         for (const candidate of pool) {
             if (candidate.used) continue;
-            
-            // Check connectivity to tailPoint
             if (distSq(candidate.seg.p2, tailPoint) < 0.1) {
-                candidate.reverse = false;
-                candidate.used = true;
-                chain.unshift(candidate);
-                tailPoint = candidate.seg.p1;
-                found = true;
-                break;
+                candidate.reverse = false; candidate.used = true;
+                chain.unshift(candidate); tailPoint = candidate.seg.p1; found = true; break;
             } else if (distSq(candidate.seg.p1, tailPoint) < 0.1) {
-                candidate.reverse = true; 
-                candidate.used = true;
-                chain.unshift(candidate);
-                tailPoint = candidate.seg.p2;
-                found = true;
-                break;
+                candidate.reverse = true; candidate.used = true;
+                chain.unshift(candidate); tailPoint = candidate.seg.p2; found = true; break;
             }
         }
         if (!found) break;
     }
 
-    debugLog(`Chain built with ${chain.length} segments`);
-
-    // 3. Define Coordinate System based on first segment of the chain
+    // 2. Define Local Coordinate System (Origin at start of first segment, aligned with first segment)
     const firstItem = chain[0];
     const baseP1 = firstItem.reverse ? firstItem.seg.p2 : firstItem.seg.p1;
     const baseP2 = firstItem.reverse ? firstItem.seg.p1 : firstItem.seg.p2;
     const origin = baseP1;
     const baseAngle = Math.atan2(baseP2.y - baseP1.y, baseP2.x - baseP1.x);
 
-    // Transform function: World -> Local Pattern Space
     const toLocal = (p: Point, rot: number = 0): {x: number, y: number, r: number} => {
-        // Translate
         const tx = p.x - origin.x;
         const ty = p.y - origin.y;
-        // Rotate by -baseAngle
         const rx = tx * Math.cos(-baseAngle) - ty * Math.sin(-baseAngle);
         const ry = tx * Math.sin(-baseAngle) + ty * Math.cos(-baseAngle);
         return { x: rx, y: ry, r: rot - (baseAngle * 180 / Math.PI) };
     };
 
-    // 4. Build Pattern Segments
+    // 3. Build Segments
     const patternSegments: PatternSegment[] = [];
-    
     chain.forEach((item, idx) => {
         const p1 = item.reverse ? item.seg.p2 : item.seg.p1;
         const p2 = item.reverse ? item.seg.p1 : item.seg.p2;
-        
         const len = dist(p1, p2);
         
-        // Calculate vector direction change relative to base angle
-        const segAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
-        const angleDiff = normalizeAngle((segAngle - baseAngle) * 180 / Math.PI);
+        // Calculate relative angle change
+        // For idx 0, angle change is 0 (it defines the baseline)
+        let angleDiff = 0;
+        if (idx > 0) {
+            // Vector of previous segment
+            const prevItem = chain[idx-1];
+            const pp1 = prevItem.reverse ? prevItem.seg.p2 : prevItem.seg.p1;
+            const pp2 = prevItem.reverse ? prevItem.seg.p1 : prevItem.seg.p2;
+            const prevAngle = Math.atan2(pp2.y - pp1.y, pp2.x - pp1.x);
+            const currAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+            angleDiff = normalizeAngle((currAngle - prevAngle) * 180 / Math.PI);
+        }
 
-        // Calculate arc properties
         let arcCenterLeft: boolean | undefined = undefined;
         let isLargeArc = false;
         let sweepAngle = 0;
 
         if (item.seg.type === 'arc' && item.seg.center && item.seg.radius) {
-            // Determine Side (Left or Right of chord)
             arcCenterLeft = isCenterLeft(p1, p2, item.seg.center);
-            
-            // Determine Large Arc flag using Original Entity data if available
             if (item.seg.originalEntity && item.seg.originalEntity.type === 'ARC') {
                 const arc = item.seg.originalEntity;
                 sweepAngle = arc.endAngle - arc.startAngle;
                 if (sweepAngle < 0) sweepAngle += 360;
                 isLargeArc = sweepAngle > 180;
-            } else {
-                // Fallback geometry check
-                // This is less reliable but useful for generated geometry
-                if (Math.abs(len - 2 * item.seg.radius) < 0.1) {
-                    // ambiguous semicircle
-                }
             }
         }
 
-        debugLog(`Seg ${idx}: Type=${item.seg.type}, Len=${len.toFixed(2)}, AngChange=${angleDiff.toFixed(2)}, ArcLeft=${arcCenterLeft}, LargeArc=${isLargeArc}`);
-
         patternSegments.push({
             type: item.seg.type === 'arc' ? 'arc' : 'line',
-            length: len, // For arcs, this is Chord Length
-            angleChange: angleDiff, // Vector direction change
+            length: len,
+            angleChange: angleDiff,
             radius: item.seg.type === 'arc' ? item.seg.radius : undefined,
-            arcCenterLeft: arcCenterLeft,
+            arcCenterLeft,
             largeArc: isLargeArc,
             sweepAngle: sweepAngle > 0 ? sweepAngle : undefined
         });
     });
 
-    // 5. Build Pattern Punches
+    // 4. Build Punches
     const patternPunches: PatternPunch[] = [];
-    
     selectedPunchIds.forEach(pid => {
         const p = activePart.punches.find(x => x.id === pid);
         if (p) {
             const loc = toLocal({ x: p.x, y: p.y }, p.rotation);
-            debugLog(`Punch ${pid}: Local X=${loc.x.toFixed(2)}, Y=${loc.y.toFixed(2)}, Rot=${loc.r.toFixed(2)}`);
             patternPunches.push({
                 toolId: p.toolId,
                 relX: loc.x,
@@ -327,316 +285,225 @@ export const createTeachCycleFromSelection = (
         }
     });
 
-    debugGroupEnd();
-
     return {
         id: generateId(),
         name,
         symmetry,
         segments: patternSegments,
         punches: patternPunches,
-        baseAngle // Store original absolute angle
+        baseAngle
     };
 };
 
-/**
- * Finds occurrences of Teach Cycles in the target geometry.
- */
+// --- FIND MATCHES (Matrix Method) ---
+
 export const findTeachCycleMatches = (
     partGeometry: ProcessedGeometry,
     teachCycles: TeachCycle[]
 ): { matches: Omit<PlacedTool, 'id'>[], coveredSegmentIndices: Set<number> } => {
     
-    debugGroup('Searching Teach Cycles');
-    
     const resultPunches: Omit<PlacedTool, 'id'>[] = [];
     const coveredIndices = new Set<number>();
     
     const TOL_LEN = 1.0; 
-    const TOL_ANG = 5.0; 
-    const TOL_CONN_SQ = 2.0;
-    const TOL_DUP_SQ = 0.2;
+    const TOL_POS = 1.5; 
+
+    // Match Helper
+    const isSamePoint = (p1: Point, p2: Point) => (p1.x - p2.x)**2 + (p1.y - p2.y)**2 < TOL_POS;
 
     const targetSegments = partGeometry.segments;
 
-    const matchesVal = (v1: number, v2: number, tol: number) => Math.abs(v1 - v2) < tol;
-
-    const markCovered = (idx: number) => {
-        if (coveredIndices.has(idx)) return;
-        coveredIndices.add(idx);
-        // Mark duplicates
-        const source = targetSegments[idx];
-        for(let j=0; j<targetSegments.length; j++) {
-            if(j === idx || coveredIndices.has(j)) continue;
-            const cand = targetSegments[j];
-            if(cand.type !== source.type) continue;
-            const dSq = Math.min(
-                distSq(source.p1, cand.p1) + distSq(source.p2, cand.p2),
-                distSq(source.p1, cand.p2) + distSq(source.p2, cand.p1)
-            );
-            if (dSq < TOL_DUP_SQ * 2) {
-                coveredIndices.add(j);
-            }
-        }
-    };
-
     teachCycles.forEach(cycle => {
         if (cycle.segments.length === 0) return;
-        debugGroup(`Cycle: ${cycle.name} (Sym: ${cycle.symmetry})`);
 
-        // Generate Variants based on Symmetry
-        const variants: { 
-            name: string, 
-            segments: PatternSegment[], 
-            punches: PatternPunch[], 
-            isMirrored: boolean // True if chirality is flipped (e.g. Left turns become Right turns)
-        }[] = [];
+        // 1. Reconstruct Abstract Chain Points in Local Pattern Space
+        const patternChain = reconstructPatternGeometry(cycle.segments);
+        const patternSeg0 = patternChain[0]; // Baseline segment from (0,0) to (L, 0)
 
-        // 1. Original (Chirality Normal)
-        variants.push({ 
-            name: "Original",
-            segments: cycle.segments, 
-            punches: cycle.punches, 
-            isMirrored: false
-        });
-        
-        // 2. Mirrored (Chirality Flipped)
-        // If "Full Symmetry" or "Horizontal" or "Vertical", we generate the mirrored variant.
-        if (cycle.symmetry !== 'none') {
-             const flippedSegments = cycle.segments.map(s => ({ 
-                 ...s, 
-                 angleChange: -s.angleChange, // Flip turn direction (Left -> Right)
-                 arcCenterLeft: s.arcCenterLeft !== undefined ? !s.arcCenterLeft : undefined // Flip arc side
-             }));
-             
-             // Flip Tooling across the path axis (X-axis of pattern)
-             const flippedPunches = cycle.punches.map(p => ({ 
-                ...p, 
-                // Flip Y coordinate (Lateral distance from path)
-                relY: -p.relY, 
-                // Flip Rotation direction (e.g. +45 becomes -45 relative to path)
-                relRotation: -p.relRotation 
-             }));
-             
-             variants.push({
-                name: "Mirrored",
-                segments: flippedSegments,
-                punches: flippedPunches, 
-                isMirrored: true
-             });
+        // 2. Define Transformations based on Symmetry
+        type Transform = { scaleX: number, scaleY: number, rotation: number, name: string };
+        const transforms: Transform[] = [];
+
+        // Always add Identity
+        transforms.push({ scaleX: 1, scaleY: 1, rotation: 0, name: 'Original' });
+
+        if (cycle.symmetry === 'full') {
+            transforms.push({ scaleX: -1, scaleY: 1, rotation: 0, name: 'Mirror X' }); // Vertical Mirror
+            transforms.push({ scaleX: 1, scaleY: -1, rotation: 0, name: 'Mirror Y' }); // Horizontal Mirror
+            transforms.push({ scaleX: -1, scaleY: -1, rotation: 0, name: 'Rot 180' });
+        } else if (cycle.symmetry === 'vertical') {
+            // Vertical symmetry = Left/Right flip = Mirror X
+            transforms.push({ scaleX: -1, scaleY: 1, rotation: 0, name: 'Mirror X' });
+        } else if (cycle.symmetry === 'horizontal') {
+            // Horizontal symmetry = Top/Bottom flip = Mirror Y
+            transforms.push({ scaleX: 1, scaleY: -1, rotation: 0, name: 'Mirror Y' });
         }
 
-        // Search in target geometry
+        // 3. Scan Target Segments
         for (let i = 0; i < targetSegments.length; i++) {
             if (coveredIndices.has(i)) continue;
+            const targetSeg = targetSegments[i];
 
-            const startSeg = targetSegments[i];
+            // Filter by Type and Length immediately
+            if (targetSeg.type !== cycle.segments[0].type) continue;
+            if (Math.abs(dist(targetSeg.p1, targetSeg.p2) - cycle.segments[0].length) > TOL_LEN) continue;
 
-            // Start Directions (Normal vs Reverse)
-            const startDirections = (cycle.symmetry !== 'none') ? [false, true] : [false, true];
+            // Try both directions of target segment
+            const directions = [
+                { start: targetSeg.p1, end: targetSeg.p2 },
+                { start: targetSeg.p2, end: targetSeg.p1 }
+            ];
 
-            for (const startReverse of startDirections) {
-                if (coveredIndices.has(i)) break; 
+            for (const dir of directions) {
+                const targetStart = dir.start;
+                const targetEnd = dir.end;
+                const targetAngle = Math.atan2(targetEnd.y - targetStart.y, targetEnd.x - targetStart.x);
 
-                const startP1 = startReverse ? startSeg.p2 : startSeg.p1;
-                const startP2 = startReverse ? startSeg.p1 : startSeg.p2;
-                
-                // Define Local Coordinate System for this candidate match
-                const baseAngle = Math.atan2(startP2.y - startP1.y, startP2.x - startP1.x);
-                const origin = startP1;
-
-                // --- STRICT ANGLE CHECK FOR SYMMETRY CONTROL ---
-                const cycleAngleDeg = (cycle.baseAngle || 0) * 180 / Math.PI;
-                const matchAngleDeg = baseAngle * 180 / Math.PI;
-                
-                for (const variant of variants) {
+                // Try all allowed Symmetry Transforms
+                for (const trans of transforms) {
                     if (coveredIndices.has(i)) break;
 
-                    // 1. Angle Filter based on Symmetry Mode
-                    if (!variant.isMirrored) {
-                        // Original Variant (Rotation Group)
-                        const diff = normalizeAngle(matchAngleDeg - cycleAngleDeg);
-                        
-                        if (cycle.symmetry === 'none') {
-                             // Strict: diff ~ 0. Prevents matching 180 deg rotated features (e.g. Bottom-Right corner)
-                             if (Math.abs(diff) > TOL_ANG) continue;
-                        } else if (cycle.symmetry === 'full') {
-                             // Full: Allow 0 and 180 rotations
-                             if (Math.abs(diff) > TOL_ANG && Math.abs(diff - 180) > TOL_ANG && Math.abs(diff + 180) > TOL_ANG) continue;
-                        } else {
-                             // Horizontal/Vertical (Original variant)
-                             // Usually implies strict orientation for the un-mirrored instances
-                             if (Math.abs(diff) > TOL_ANG) continue;
-                        }
-                    } else {
-                        // Mirrored Variant (Reflection Group)
-                        // Verify if the angle matches a valid reflection for the active symmetry
-                        let targetAngles: number[] = [];
-                        
-                        // Mirror Y (Horizontal): Angle -> -Angle
-                        if (cycle.symmetry === 'horizontal' || cycle.symmetry === 'full') targetAngles.push(-cycleAngleDeg);
-                        
-                        // Mirror X (Vertical): Angle -> 180 - Angle
-                        if (cycle.symmetry === 'vertical' || cycle.symmetry === 'full') targetAngles.push(180 - cycleAngleDeg);
-                        
-                        const matchesAny = targetAngles.some(t => Math.abs(normalizeAngle(matchAngleDeg - t)) < TOL_ANG);
-                        if (!matchesAny) continue;
-                    }
-
-                    const patSegs = variant.segments;
-                    const firstPat = patSegs[0];
-
-                    // --- 2. Check FIRST Segment Match ---
-                    if (startSeg.type !== firstPat.type) continue;
+                    // --- ALIGNMENT ---
+                    // 1. Apply Symmetry Transform to Pattern Seg 0
+                    // Original Seg0 is (0,0) -> (Len, 0)
+                    // Transformed Seg0 Vector:
+                    const p0_vec_x = patternSeg0.p2.x - patternSeg0.p1.x; // Len
+                    const p0_vec_y = patternSeg0.p2.y - patternSeg0.p1.y; // 0
                     
-                    const actualLen = dist(startP1, startP2);
-                    if (!matchesVal(actualLen, firstPat.length, TOL_LEN)) continue;
+                    // Apply Scale
+                    const sx = p0_vec_x * trans.scaleX;
+                    const sy = p0_vec_y * trans.scaleY; // Still 0
                     
-                    // Arc Check (First Segment)
-                    if (firstPat.type === 'arc') {
-                        if (!startSeg.radius || !firstPat.radius || !matchesVal(startSeg.radius, firstPat.radius, TOL_LEN)) continue;
+                    // Angle of the transformed pattern baseline in Pattern Space
+                    const patBaseAngle = Math.atan2(sy, sx);
+
+                    // 2. Determine Required Rotation to align Transformed Pattern to Target
+                    // We want patBaseAngle + globalRotation = targetAngle
+                    const globalRotation = targetAngle - patBaseAngle;
+                    const cosG = Math.cos(globalRotation);
+                    const sinG = Math.sin(globalRotation);
+
+                    // Transform Function: Pattern Local -> Target World
+                    const transformPoint = (px: number, py: number): Point => {
+                        // 1. Symmetry Scale
+                        const scaledX = px * trans.scaleX;
+                        const scaledY = py * trans.scaleY;
+                        // 2. Rotate to align with target
+                        const rx = scaledX * cosG - scaledY * sinG;
+                        const ry = scaledX * sinG + scaledY * cosG;
+                        // 3. Translate to target start
+                        return { x: rx + targetStart.x, y: ry + targetStart.y };
+                    };
+
+                    // --- VERIFICATION ---
+                    // Project all pattern segments into world space and look for matches
+                    const matchedIndices: number[] = [i];
+                    let allMatched = true;
+
+                    for (let k = 1; k < patternChain.length; k++) {
+                        const pSeg = patternChain[k];
+                        const patType = cycle.segments[k].type;
+                        const patRad = cycle.segments[k].radius;
+
+                        // Calculate Expected World Coordinates
+                        const expectedP1 = transformPoint(pSeg.p1.x, pSeg.p1.y);
+                        const expectedP2 = transformPoint(pSeg.p2.x, pSeg.p2.y);
+
+                        // Find a target segment that connects P1->P2
+                        let foundK = -1;
                         
-                        // Strict Large Arc Check
-                        let isActualLarge = false;
-                        if (startSeg.originalEntity && startSeg.originalEntity.type === 'ARC') {
-                            let sweep = startSeg.originalEntity.endAngle - startSeg.originalEntity.startAngle;
-                            if (sweep < 0) sweep += 360;
-                            isActualLarge = sweep > 180;
-                        }
-                        
-                        if (firstPat.largeArc !== undefined && isActualLarge !== firstPat.largeArc) {
-                            continue;
-                        }
-
-                        if (firstPat.arcCenterLeft !== undefined && startSeg.center) {
-                            const isActualLeft = isCenterLeft(startP1, startP2, startSeg.center);
-                            const expectedLeft = firstPat.arcCenterLeft;
-
-                            if (isActualLeft !== expectedLeft) {
-                                continue;
-                            }
-                        }
-                    }
-
-                    // --- 3. Check Chain Continuity ---
-                    const matchedIndices = [i];
-                    let currentEndpoint = startP2;
-                    let matchFound = true;
-
-                    for (let k = 1; k < patSegs.length; k++) {
-                        const patSeg = patSegs[k];
-                        let foundNextIndex = -1;
-                        let nextReverse = false;
-
-                        for(let t=0; t<targetSegments.length; t++) {
+                        // Optimization: Check only segments starting near expectedP1
+                        // This implies O(N^2) worst case but N is small per cycle.
+                        // Can iterate all or use spatial hash if needed. Simple loop is fine for < 1000 segs.
+                        for (let t = 0; t < targetSegments.length; t++) {
                             if (matchedIndices.includes(t) || coveredIndices.has(t)) continue;
-                            const candidate = targetSegments[t];
+                            const cand = targetSegments[t];
                             
-                            if (candidate.type !== patSeg.type) continue;
-                            if (!matchesVal(dist(candidate.p1, candidate.p2), patSeg.length, TOL_LEN)) continue;
-                            
-                            // Check endpoints connectivity
-                            let isReverseCand = false;
-                            if (distSq(currentEndpoint, candidate.p1) < TOL_CONN_SQ) {
-                                isReverseCand = false;
-                            } else if (distSq(currentEndpoint, candidate.p2) < TOL_CONN_SQ) {
-                                isReverseCand = true;
-                            } else {
-                                continue; 
-                            }
+                            if (cand.type !== patType) continue;
+                            if (patType === 'arc' && patRad && cand.radius && Math.abs(cand.radius - patRad) > TOL_LEN) continue;
 
-                            const candP1 = isReverseCand ? candidate.p2 : candidate.p1;
-                            const candP2 = isReverseCand ? candidate.p1 : candidate.p2;
+                            // Check connectivity (Allow reverse)
+                            const matchForward = isSamePoint(cand.p1, expectedP1) && isSamePoint(cand.p2, expectedP2);
+                            const matchReverse = isSamePoint(cand.p2, expectedP1) && isSamePoint(cand.p1, expectedP2);
 
-                            let isGeoMatch = false;
-
-                            if (patSeg.type === 'line') {
-                                const candAngle = Math.atan2(candP2.y - candP1.y, candP2.x - candP1.x);
-                                const diff = normalizeAngle((candAngle - baseAngle) * 180 / Math.PI);
-                                
-                                if (matchesVal(diff, patSeg.angleChange, TOL_ANG)) {
-                                    isGeoMatch = true;
+                            if (matchForward || matchReverse) {
+                                // For arcs, verify center side if needed
+                                // (If mirrored, 'Left' becomes 'Right')
+                                if (patType === 'arc' && cycle.segments[k].arcCenterLeft !== undefined && cand.center) {
+                                    const expectedLeft = cycle.segments[k].arcCenterLeft;
+                                    // Flip expectation if scaled X * scaled Y is negative (determinant < 0 => chirality flip)
+                                    const det = trans.scaleX * trans.scaleY;
+                                    const finalExpectedLeft = det < 0 ? !expectedLeft : expectedLeft;
+                                    
+                                    // Actual check: P1->P2 vector vs Center
+                                    // Note: If matched Reverse, vector is P2->P1.
+                                    const start = matchReverse ? cand.p2 : cand.p1;
+                                    const end = matchReverse ? cand.p1 : cand.p2;
+                                    const actualLeft = isCenterLeft(start, end, cand.center);
+                                    
+                                    if (actualLeft !== finalExpectedLeft) continue;
                                 }
-                            } else if (patSeg.type === 'arc') {
-                                if (candidate.radius && patSeg.radius && matchesVal(candidate.radius, patSeg.radius, TOL_LEN)) {
-                                    // Large Arc Check
-                                    let isCandLarge = false;
-                                    if (candidate.originalEntity && candidate.originalEntity.type === 'ARC') {
-                                        let sweep = candidate.originalEntity.endAngle - candidate.originalEntity.startAngle;
-                                        if (sweep < 0) sweep += 360;
-                                        isCandLarge = sweep > 180;
-                                    }
-                                    if (patSeg.largeArc !== undefined && isCandLarge !== patSeg.largeArc) {
-                                        continue;
-                                    }
 
-                                    if (patSeg.arcCenterLeft !== undefined && candidate.center) {
-                                        const isActualLeft = isCenterLeft(candP1, candP2, candidate.center);
-                                        const expectedLeft = patSeg.arcCenterLeft;
-
-                                        if (isActualLeft === expectedLeft) {
-                                            isGeoMatch = true;
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (isGeoMatch) {
-                                foundNextIndex = t;
-                                nextReverse = isReverseCand;
+                                foundK = t;
                                 break;
                             }
                         }
 
-                        if (foundNextIndex !== -1) {
-                            matchedIndices.push(foundNextIndex);
-                            const chosen = targetSegments[foundNextIndex];
-                            currentEndpoint = nextReverse ? chosen.p1 : chosen.p2;
+                        if (foundK !== -1) {
+                            matchedIndices.push(foundK);
                         } else {
-                            matchFound = false;
+                            allMatched = false;
                             break;
                         }
                     }
 
-                    if (matchFound) {
-                        debugLog(`MATCH FOUND! Segs: [${matchedIndices.join(', ')}]. Var: ${variant.name}, StartRev: ${startReverse}`);
+                    if (allMatched) {
+                        debugLog(`Matched Cycle '${cycle.name}' Variant '${trans.name}'`);
                         
-                        // Collect raw punches for this instance
-                        const instanceRawPunches: Omit<PlacedTool, 'id'>[] = [];
-
-                        variant.punches.forEach(p => {
-                            const rx = p.relX * Math.cos(baseAngle) - p.relY * Math.sin(baseAngle);
-                            const ry = p.relX * Math.sin(baseAngle) + p.relY * Math.cos(baseAngle);
-                            const wx = origin.x + rx;
-                            const wy = origin.y + ry;
-                            const wr = p.relRotation + (baseAngle * 180 / Math.PI);
-
-                            instanceRawPunches.push({
+                        // Collect Punches
+                        const instancePunches: Omit<PlacedTool, 'id'>[] = [];
+                        cycle.punches.forEach(p => {
+                            const worldPos = transformPoint(p.relX, p.relY);
+                            
+                            // Rotation:
+                            // 1. Symmetry flip affects rotation direction.
+                            //    If determinant < 0, rotation direction flips.
+                            //    Angle A becomes -A.
+                            //    Also, Mirror X (scaleX=-1) on 0 deg is 180 deg (flip).
+                            //    Logic: Transform unit vector of punch rotation.
+                            const punchCos = Math.cos(p.relRotation * Math.PI / 180);
+                            const punchSin = Math.sin(p.relRotation * Math.PI / 180);
+                            
+                            // Apply Scale
+                            const scCos = punchCos * trans.scaleX;
+                            const scSin = punchSin * trans.scaleY;
+                            
+                            // Apply Global Rotation
+                            const finalCos = scCos * cosG - scSin * sinG;
+                            const finalSin = scCos * sinG + scSin * cosG;
+                            
+                            const finalRotRad = Math.atan2(finalSin, finalCos);
+                            let finalRotDeg = finalRotRad * 180 / Math.PI;
+                            
+                            instancePunches.push({
                                 toolId: p.toolId,
-                                x: wx,
-                                y: wy,
-                                rotation: wr
+                                x: worldPos.x,
+                                y: worldPos.y,
+                                rotation: normalizeAngle(finalRotDeg)
                             });
                         });
 
-                        // Apply Topology-Aware Grouping
-                        const groupedInstance = groupPunchesByTopology(
-                            instanceRawPunches, 
-                            matchedIndices.map(i => targetSegments[i]), 
-                            cycle.name
-                        );
+                        // Add to results
+                        const grouped = groupPunchesByTopology(instancePunches, matchedIndices.map(mi => targetSegments[mi]), cycle.name);
+                        resultPunches.push(...grouped);
                         
-                        resultPunches.push(...groupedInstance);
-
-                        matchedIndices.forEach(idx => markCovered(idx));
-                        break; 
+                        matchedIndices.forEach(mi => coveredIndices.add(mi));
+                        break; // Stop checking transforms for this starting segment
                     }
                 }
             }
         }
-        debugGroupEnd();
     });
 
-    debugGroupEnd();
     return { matches: resultPunches, coveredSegmentIndices: coveredIndices };
 };

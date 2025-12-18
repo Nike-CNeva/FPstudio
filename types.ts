@@ -250,6 +250,9 @@ export interface NestingSettings {
   // Optimization
   useCommonLine: boolean;
   vertexSnapping: boolean; // Auto alignment
+  
+  // New Flag
+  nestAsRectangle: boolean; 
 }
 
 export interface ScheduledPart {

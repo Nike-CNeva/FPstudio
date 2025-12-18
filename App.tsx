@@ -7,6 +7,7 @@ import { usePanAndZoom } from './hooks/usePanAndZoom';
 import { useConfirmation } from './hooks/useConfirmation';
 import { useFileImport } from './hooks/useFileImport';
 import { useManualPunch } from './hooks/useManualPunch';
+import { useLocalStorage } from './hooks/useLocalStorage';
 
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
@@ -33,20 +34,23 @@ import { createTeachCycleFromSelection } from './services/teachLogic';
 
 const App: React.FC = () => {
     const [mode, setMode] = useState<AppMode>(AppMode.PartEditor);
-    const [tools, setTools] = useState<Tool[]>(initialTools);
-    const [parts, setParts] = useState<Part[]>(initialParts);
-    const [scripts, setScripts] = useState<ParametricScript[]>(initialScripts);
-    const [activePart, setActivePart] = useState<Part | null>(null);
-    const [nests, setNests] = useState<NestLayout[]>(initialNests);
-    const [turretLayouts, setTurretLayouts] = useState<TurretLayout[]>(initialTurretLayouts);
     
+    // --- Persistent State using LocalStorage ---
+    const [tools, setTools] = useLocalStorage<Tool[]>('fp_tools', initialTools);
+    const [parts, setParts] = useLocalStorage<Part[]>('fp_parts', initialParts);
+    const [scripts, setScripts] = useLocalStorage<ParametricScript[]>('fp_scripts', initialScripts);
+    const [nests, setNests] = useLocalStorage<NestLayout[]>('fp_nests', initialNests);
+    const [turretLayouts, setTurretLayouts] = useLocalStorage<TurretLayout[]>('fp_turret_layouts', initialTurretLayouts);
+    const [machineSettings, setMachineSettings] = useLocalStorage<MachineSettings>('fp_machine_settings', defaultMachineSettings);
+    const [optimizerSettings, setOptimizerSettings] = useLocalStorage<OptimizerSettings>('fp_optimizer_settings', defaultOptimizerSettings);
+    const [teachCycles, setTeachCycles] = useLocalStorage<TeachCycle[]>('fp_teach_cycles', []);
+    
+    // --- Session State (Not Persisted) ---
+    const [activePart, setActivePart] = useState<Part | null>(null);
     const [activeNestId, setActiveNestId] = useState<string | null>(initialNests[0]?.id || null);
     const [activeSheetIndex, setActiveSheetIndex] = useState<number>(0);
     const [selectedPunchId, setSelectedPunchId] = useState<string | null>(null);
     const [selectedNestPartId, setSelectedNestPartId] = useState<string | null>(null);
-
-    const [machineSettings, setMachineSettings] = useState<MachineSettings>(defaultMachineSettings);
-    const [optimizerSettings, setOptimizerSettings] = useState<OptimizerSettings>(defaultOptimizerSettings);
 
     // --- Optimization & Simulation State ---
     const [optimizedOperations, setOptimizedOperations] = useState<PunchOp[] | null>(null);
@@ -63,7 +67,6 @@ const App: React.FC = () => {
     const [nibbleSettings, setNibbleSettings] = useState<NibbleSettings>({ extensionStart: 0, extensionEnd: 0, minOverlap: 1, hitPointMode: 'offset', toolPosition: 'long' });
     const [destructSettings, setDestructSettings] = useState<DestructSettings>({ overlap: 0.7, scallop: 0.25, notchExpansion: 0.25 });
 
-    const [teachCycles, setTeachCycles] = useState<TeachCycle[]>([]);
     const [teachMode, setTeachMode] = useState(false);
     const [selectedSegmentIds, setSelectedSegmentIds] = useState<number[]>([]);
     const [selectedTeachPunchIds, setSelectedTeachPunchIds] = useState<string[]>([]);
@@ -76,6 +79,8 @@ const App: React.FC = () => {
     const [showTeachSaveModal, setShowTeachSaveModal] = useState(false);
     
     const [isNestingProcessing, setIsNestingProcessing] = useState(false);
+    const [nestingProgress, setNestingProgress] = useState(0);
+    const [nestingStatus, setNestingStatus] = useState('');
     const [toasts, setToasts] = useState<ToastMessage[]>([]);
     
     const activePartProcessedGeometry = useMemo(() => activePart ? getGeometryFromEntities(activePart) : null, [activePart]);
@@ -216,15 +221,11 @@ const App: React.FC = () => {
         if (mode === AppMode.Nesting) return;
         if (mode !== AppMode.PartEditor || !activePart) return;
 
-        // Invert Y for Teach Logic or simple selection logic if needed in App
         const point = { x: rawPoint.x, y: -rawPoint.y };
 
         if (teachMode) {
              const closestSeg = findClosestSegment(point, activePartProcessedGeometry);
              if (closestSeg) {
-                 // Re-find index
-                 // Optimization: findClosestSegment returns segment data, we need index.
-                 // We can do a quick lookup or just distance check again.
                  const idx = activePartProcessedGeometry?.segments.findIndex(s => 
                      Math.abs(s.p1.x - closestSeg.p1.x) < 0.001 && Math.abs(s.p1.y - closestSeg.p1.y) < 0.001 &&
                      Math.abs(s.p2.x - closestSeg.p2.x) < 0.001 && Math.abs(s.p2.y - closestSeg.p2.y) < 0.001
@@ -239,8 +240,6 @@ const App: React.FC = () => {
         
         if (selectedPunchId) setSelectedPunchId(null);
         if (!selectedToolId || !selectedTool) return;
-
-        // Delegate to Manual Punch Hook
         handleManualPunchClick(rawPoint);
     };
     
@@ -302,18 +301,21 @@ const App: React.FC = () => {
         if(!activeNest || activeNest.scheduledParts.length===0) return;
         
         setIsNestingProcessing(true);
-        setNests(n => n.map(x => x.id === activeNestId ? {...x, sheets: []} : x)); // Clear previous
+        setNestingProgress(0);
+        setNestingStatus('Инициализация...');
+        setNests(n => n.map(x => x.id === activeNestId ? {...x, sheets: []} : x)); 
         setActiveSheetIndex(0);
-        addToast("Запуск глубокого раскроя...", "info");
 
         try {
-            for await (const updatedSheets of nestingGenerator(activeNest.scheduledParts, parts, tools, activeNest.settings)) {
+            for await (const update of nestingGenerator(activeNest.scheduledParts, parts, tools, activeNest.settings)) {
                 setNests(prev => prev.map(n => {
                     if (n.id === activeNestId) {
-                        return { ...n, sheets: updatedSheets };
+                        return { ...n, sheets: update.sheets };
                     }
                     return n;
                 }));
+                setNestingProgress(update.progress);
+                setNestingStatus(update.status);
             }
             addToast("Раскрой завершен", "success");
         } catch(e:any) {
@@ -321,6 +323,8 @@ const App: React.FC = () => {
             addToast("Ошибка раскроя: " + e.message, "error");
         } finally {
             setIsNestingProcessing(false);
+            setNestingProgress(100);
+            setNestingStatus('');
         }
     };
 
@@ -448,6 +452,8 @@ const App: React.FC = () => {
                             teachCycles={teachCycles} onDeleteTeachCycle={handleDeleteCycle}
                             onRunNesting={handleRunNesting}
                             isNestingProcessing={isNestingProcessing}
+                            nestingProgress={nestingProgress}
+                            nestingStatus={nestingStatus}
                             onClearNest={() => confirm("Сброс", "Очистить раскрой?", () => { setNests(prev => prev.map(n => n.id === activeNestId ? { ...n, sheets: [] } : n)); setSelectedNestPartId(null); setActiveSheetIndex(0); })}
                             selectedNestPartId={selectedNestPartId}
                             onMoveNestPart={(id, dx, dy) => {

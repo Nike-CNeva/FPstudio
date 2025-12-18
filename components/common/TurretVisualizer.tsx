@@ -16,10 +16,14 @@ export const TurretVisualizer: React.FC<TurretVisualizerProps> = ({
     tools, 
     selectedStationId, 
     onStationClick,
-    mode
+    mode 
 }) => {
     return (
-        <svg width="100%" height="100%" viewBox="-350 -350 700 700">
+        <svg 
+            width="100%" 
+            height="100%" 
+            viewBox="-350 -350 700 700"
+        >
             <defs>
                 <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
                     <feDropShadow dx="2" dy="2" stdDeviation="3" floodColor="#000" floodOpacity="0.3" />
@@ -32,7 +36,7 @@ export const TurretVisualizer: React.FC<TurretVisualizerProps> = ({
             <circle r="200" fill="#e2e8f0" stroke="#a0aec0" strokeWidth="2" />
             <circle r="100" fill="#edf2f7" stroke="#cbd5e0" strokeWidth="1" />
             
-            <text x="0" y="0" textAnchor="middle" dy="5" className="fill-gray-600 text-lg font-bold">
+            <text x="0" y="0" textAnchor="middle" dy="5" className="fill-gray-600 text-lg font-bold pointer-events-none select-none">
                 Main Turret
             </text>
 
@@ -64,7 +68,7 @@ export const TurretVisualizer: React.FC<TurretVisualizerProps> = ({
                     <g 
                         key={s.id} 
                         transform={`translate(${x}, ${y})`} 
-                        onClick={() => onStationClick(s.id)} 
+                        onClick={(e) => { e.stopPropagation(); onStationClick(s.id); }} 
                         className="cursor-pointer hover:opacity-90 transition-opacity"
                     >
                         <circle r="28" fill={circleFill} stroke={circleStroke} strokeWidth={isSelected ? 4 : 2} />
@@ -84,11 +88,11 @@ export const TurretVisualizer: React.FC<TurretVisualizerProps> = ({
                         {/* Station Number Badge */}
                         <g transform="translate(0, -38)">
                             <rect x="-12" y="-10" width="24" height="20" rx="4" fill="#fff" stroke="#718096" strokeWidth="1" />
-                            <text y="4" textAnchor="middle" className="text-xs fill-gray-900 font-bold select-none">{s.id}</text>
+                            <text y="4" textAnchor="middle" className="text-xs fill-gray-900 font-bold select-none pointer-events-none">{s.id}</text>
                         </g>
 
                         {/* Bottom Label: Type or Status */}
-                        <text y="40" textAnchor="middle" className="text-[10px] fill-gray-700 font-bold select-none bg-white">
+                        <text y="40" textAnchor="middle" className="text-[10px] fill-gray-700 font-bold select-none bg-white pointer-events-none">
                             {isMT ? "MT" : (mode === 'setup' ? `${s.type} ${s.isAutoIndex ? '(AI)' : ''}` : (hasTools ? s.type : ""))}
                         </text>
                         
@@ -96,9 +100,9 @@ export const TurretVisualizer: React.FC<TurretVisualizerProps> = ({
                         {isMT && (
                             <g>
                                 <circle r="15" fill="#805ad5" opacity="0.2" />
-                                <text y="5" textAnchor="middle" className="text-[10px] fill-purple-800 font-bold">MT</text>
+                                <text y="5" textAnchor="middle" className="text-[10px] fill-purple-800 font-bold pointer-events-none select-none">MT</text>
                                 {hasTools && mode === 'control' && (
-                                     <text y="18" textAnchor="middle" className="text-[8px] fill-purple-900 font-bold">
+                                     <text y="18" textAnchor="middle" className="text-[8px] fill-purple-900 font-bold pointer-events-none select-none">
                                          {assignedTools.length}/24
                                      </text>
                                 )}
@@ -117,7 +121,11 @@ interface MtVisualizerProps {
     onSlotClick: (id: number) => void;
 }
 
-export const MtVisualizer: React.FC<MtVisualizerProps> = ({ tools, selectedSlotId, onSlotClick }) => {
+export const MtVisualizer: React.FC<MtVisualizerProps> = ({ 
+    tools, 
+    selectedSlotId, 
+    onSlotClick
+}) => {
     // 24 slots geometry
     const mtSlots = Array.from({ length: 24 }, (_, i) => {
         const id = i + 1;
@@ -136,7 +144,11 @@ export const MtVisualizer: React.FC<MtVisualizerProps> = ({ tools, selectedSlotI
     });
 
     return (
-        <svg width="100%" height="100%" viewBox="-150 -150 300 300">
+        <svg 
+            width="100%" 
+            height="100%" 
+            viewBox="-150 -150 300 300"
+        >
              <defs>
                 <radialGradient id="greenTool" cx="30%" cy="30%" r="70%">
                     <stop offset="0%" stopColor="#81e6d9" />
@@ -146,7 +158,7 @@ export const MtVisualizer: React.FC<MtVisualizerProps> = ({ tools, selectedSlotI
 
              {/* Background Plate */}
              <circle r="145" fill="#f3e8ff" stroke="#805ad5" strokeWidth="4" />
-             <text x="0" y="-5" textAnchor="middle" className="fill-purple-900 text-lg font-bold">Multi-Tool</text>
+             <text x="0" y="-5" textAnchor="middle" className="fill-purple-900 text-lg font-bold pointer-events-none select-none">Multi-Tool</text>
              
              {mtSlots.map(slot => {
                  const rad = (slot.angle * Math.PI) / 180;
@@ -157,7 +169,12 @@ export const MtVisualizer: React.FC<MtVisualizerProps> = ({ tools, selectedSlotI
                  const isSelected = selectedSlotId === slot.id;
 
                  return (
-                    <g key={slot.id} transform={`translate(${x}, ${y})`} onClick={() => onSlotClick(slot.id)} className="cursor-pointer">
+                    <g 
+                        key={slot.id} 
+                        transform={`translate(${x}, ${y})`} 
+                        onClick={(e) => { e.stopPropagation(); onSlotClick(slot.id); }} 
+                        className="cursor-pointer"
+                    >
                         <circle r="14" fill={assignedTool ? "#4299e1" : "#fff"} stroke={isSelected ? "#ecc94b" : "#6b46c1"} strokeWidth={isSelected ? 3 : 1} />
                         
                         {/* Tool Indicator */}
@@ -165,7 +182,7 @@ export const MtVisualizer: React.FC<MtVisualizerProps> = ({ tools, selectedSlotI
                              <circle r="8" fill="url(#greenTool)" />
                         ) : null}
 
-                        <text y="4" textAnchor="middle" className="text-[8px] fill-gray-800 font-bold select-none z-10" style={assignedTool ? {fill:'white', textShadow:'0 0 2px black'} : {}}>
+                        <text y="4" textAnchor="middle" className="text-[8px] fill-gray-800 font-bold select-none z-10 pointer-events-none" style={assignedTool ? {fill:'white', textShadow:'0 0 2px black'} : {}}>
                             {slot.id}
                         </text>
                         {assignedTool && <title>{assignedTool.name}</title>}

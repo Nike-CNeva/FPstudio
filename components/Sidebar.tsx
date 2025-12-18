@@ -58,6 +58,8 @@ interface SidebarProps {
     // Nesting Actions
     onRunNesting?: () => void;
     isNestingProcessing?: boolean; 
+    nestingProgress?: number;
+    nestingStatus?: string;
     onClearNest?: () => void;
     selectedNestPartId?: string | null;
     onMoveNestPart?: (id: string, dx: number, dy: number) => void;
@@ -67,7 +69,7 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = (props) => {
     const { 
         mode, activePart, tools, activeNest, parts,
-        onRunNesting, isNestingProcessing, onClearNest, selectedNestPartId, onMoveNestPart, onRotateNestPart,
+        onRunNesting, isNestingProcessing, nestingProgress = 0, nestingStatus = '', onClearNest, selectedNestPartId, onMoveNestPart, onRotateNestPart,
         onUpdateNestingSettings, onUpdateNestMetadata
     } = props;
 
@@ -126,10 +128,25 @@ export const Sidebar: React.FC<SidebarProps> = (props) => {
                     </div>
                     
                     <div className="mt-4 pt-4 border-t border-gray-600 space-y-3 flex-none">
+                        {isNestingProcessing && (
+                            <div className="space-y-1 mb-2 px-1">
+                                <div className="flex justify-between items-center text-[10px] text-blue-300 font-bold uppercase tracking-wider">
+                                    <span className="truncate mr-2">{nestingStatus || 'Обработка...'}</span>
+                                    <span>{Math.round(nestingProgress)}%</span>
+                                </div>
+                                <div className="w-full bg-gray-900 rounded-full h-1.5 overflow-hidden border border-gray-600">
+                                    <div 
+                                        className="bg-blue-500 h-full transition-all duration-300 ease-out shadow-[0_0_8px_rgba(59,130,246,0.5)]" 
+                                        style={{ width: `${nestingProgress}%` }}
+                                    ></div>
+                                </div>
+                            </div>
+                        )}
+
                         <button 
                             onClick={onRunNesting} 
                             disabled={isNestingProcessing}
-                            className={`w-full flex items-center justify-center space-x-2 p-3 rounded-md shadow-lg font-bold text-white transition-all ${isNestingProcessing ? 'bg-yellow-600 cursor-progress' : 'bg-blue-600 hover:bg-blue-700'}`}
+                            className={`w-full flex items-center justify-center space-x-2 p-3 rounded-md shadow-lg font-bold text-white transition-all ${isNestingProcessing ? 'bg-blue-800 opacity-80 cursor-progress' : 'bg-blue-600 hover:bg-blue-700'}`}
                         >
                             {isNestingProcessing ? (
                                 <>
