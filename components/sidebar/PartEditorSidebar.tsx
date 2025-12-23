@@ -124,13 +124,12 @@ export const PartEditorSidebar: React.FC<PartEditorSidebarProps> = ({
                                 onUpdatePunch={onUpdatePunch}
                                 onClearAll={onClearAllPunches}
                             />
-                            <ManualPunchModeSelector manualPunchMode={manualPunchMode} setManualPunchMode={setManualPunchMode} />
-                            {manualPunchMode === ManualPunchMode.Nibble && <NibbleSettingsPanel nibbleSettings={nibbleSettings} setNibbleSettings={setNibbleSettings} />}
-                            {manualPunchMode === ManualPunchMode.Destruct && <DestructSettingsPanel destructSettings={destructSettings} setDestructSettings={setDestructSettings} />}
+                            <ManualPunchModeSelector mode={manualPunchMode} setMode={setManualPunchMode} />
+                            {manualPunchMode === ManualPunchMode.Nibble && <NibbleSettingsPanel settings={nibbleSettings} setSettings={setNibbleSettings} />}
+                            {manualPunchMode === ManualPunchMode.Destruct && <DestructSettingsPanel settings={destructSettings} setSettings={setDestructSettings} />}
                             <PlacementSettings 
                                 punchOrientation={punchOrientation}
                                 setPunchOrientation={setPunchOrientation}
-                                onCyclePunchOrientation={onCyclePunchOrientation}
                                 selectedToolId={selectedToolId}
                                 tools={tools}
                                 manualPunchMode={manualPunchMode}

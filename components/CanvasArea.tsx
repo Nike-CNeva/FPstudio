@@ -60,6 +60,27 @@ const GridDefs: React.FC = () => (
     </defs>
 );
 
+/**
+ * **CanvasArea**
+ * 
+ * The primary visualization component for the application.
+ * It renders the Interactive SVG environment for both the Part Editor and Nesting modes.
+ * 
+ * **Coordinate System:**
+ * The SVG uses a transformed coordinate system:
+ * - `<g transform="scale(1, -1)">` is applied to flip the Y-axis.
+ * - This creates a standard Cartesian system (Y-Up) matching DXF/G-Code logic.
+ * - (0,0) is visually at the bottom-left of the part/sheet (after Pan/Zoom).
+ * 
+ * **Features:**
+ * - Dynamic Grid.
+ * - Pan and Zoom controls.
+ * - Rendering sub-components based on `mode` (`PartEditorCanvas` vs `NestingCanvas`).
+ * - Encapsulated interaction logic (Selection box, Dragging).
+ * 
+ * @param {CanvasAreaProps} props Contains all state required for rendering geometry, tools, and sheets.
+ * @returns {React.ReactElement} The SVG container and overlays.
+ */
 export const CanvasArea: React.FC<CanvasAreaProps> = (props) => {
     const { mode, activePart, processedGeometry, activeNest, currentNestSheet, tools, parts, teachMode, manualPunchMode, simulationStep, optimizedOperations, selectedPunchId, onSelectPunch } = props;
 

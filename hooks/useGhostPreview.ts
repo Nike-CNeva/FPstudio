@@ -25,6 +25,27 @@ interface GhostPreviewResult {
     snapPoint: Point | null;
 }
 
+/**
+ * **useGhostPreview**
+ * 
+ * Calculates the "Ghost" (preview) visual for the punch tool before the user clicks.
+ * This provides real-time visual feedback on where the tool will be placed, 
+ * factoring in snapping, rotation, and specific mode logic (Nibble/Punch).
+ * 
+ * **Behaviors:**
+ * - **Punch Mode:** Shows a single tool outline snapped to vertices/edges or free-floating.
+ * - **Nibble Mode:** Shows a series of tool outlines along the closest line segment.
+ * - **Destruct Mode:** Hides preview during the first step of defining the rectangle.
+ * - **Teach Mode:** Disables ghost preview.
+ * 
+ * **Edge Cases:**
+ * - `mousePos` is null (cursor outside canvas) -> Returns empty result.
+ * - `selectedTool` is undefined -> Returns empty result.
+ * - Geometry processing errors -> Falls back to raw mouse position.
+ * 
+ * @param {UseGhostPreviewProps} props Inputs primarily from `useEditorState`.
+ * @returns {GhostPreviewResult} Data structure for rendering ghost elements in the Canvas.
+ */
 export const useGhostPreview = ({
     mousePos,
     activePart,

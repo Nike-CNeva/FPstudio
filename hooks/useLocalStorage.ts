@@ -1,6 +1,27 @@
 
 import React, { useState, useEffect } from 'react';
 
+/**
+ * **useLocalStorage**
+ * 
+ * A React hook that persists state to `localStorage`.
+ * It behaves like `useState` but synchronizes with the browser's storage.
+ * 
+ * **Features:**
+ * - Lazy initialization (reads from storage only on mount).
+ * - Graceful error handling (fallback to initial value if storage fails).
+ * - Type-safe via generics.
+ * 
+ * **Usage Example:**
+ * ```tsx
+ * const [username, setUsername] = useLocalStorage<string>('user_name', 'Guest');
+ * ```
+ * 
+ * @template T The type of the state variable.
+ * @param {string} key The localStorage key.
+ * @param {T} initialValue The default value if the key doesn't exist.
+ * @returns {[T, React.Dispatch<React.SetStateAction<T>>]} Tuple of [storedValue, setValue].
+ */
 export function useLocalStorage<T>(key: string, initialValue: T): [T, React.Dispatch<React.SetStateAction<T>>] {
   // Get from local storage then parse stored json or return initialValue
   const readValue = (): T => {

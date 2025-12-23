@@ -1,5 +1,4 @@
 
-
 import { useState, useCallback, useRef, MouseEvent, WheelEvent } from 'react';
 
 export interface ViewBox {
@@ -9,6 +8,26 @@ export interface ViewBox {
     height: number;
 }
 
+/**
+ * **usePanAndZoom**
+ * 
+ * Provides state and event handlers for an SVG Pan-and-Zoom viewport.
+ * 
+ * **Features:**
+ * - Zoom on Wheel (centered on mouse pointer).
+ * - Pan on Mouse Drag (Left Click).
+ * - Distinguishes between "Click" (Placement) and "Drag" (Pan) to prevent accidental punches after panning.
+ * - Coordinate Transformation: Converts Screen/Event coordinates (Pixels) to SVG ViewBox coordinates (World Units).
+ * 
+ * **Usage:**
+ * Spread the `panZoomHandlers` onto the SVG element and pass `svgRef` to it.
+ * 
+ * @param {ViewBox} initialViewBox - The starting coordinate system (x, y, width, height).
+ * @param {Object} options - Configuration.
+ * @param {(point: {x: number, y: number}) => void} options.onClick - Callback fired only if a click was NOT a drag.
+ * 
+ * @returns {Object} Contains `viewBox` state, `svgRef` for the element, and `panZoomHandlers` for events.
+ */
 export const usePanAndZoom = (
     initialViewBox: ViewBox,
     options?: { onClick?: (point: { x: number; y: number }) => void }

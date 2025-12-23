@@ -2,13 +2,29 @@
 import React, { useState } from 'react';
 import { AutoPunchSettings, TurretLayout } from '../types';
 import { PlayIcon } from './Icons';
-import { ModalInputField } from './common/InputField';
+import { ToolSourcePanel } from './auto-punch/ToolSourcePanel';
+import { GeometrySettingsPanel } from './auto-punch/GeometrySettingsPanel';
+import { MicroJointsPanel } from './auto-punch/MicroJointsPanel';
 
-export const AutoPunchSettingsModal: React.FC<{ 
+interface AutoPunchSettingsModalProps { 
     onClose: () => void; 
     onApply: (settings: AutoPunchSettings) => void;
     turretLayouts: TurretLayout[];
-}> = ({ onClose, onApply, turretLayouts }) => {
+}
+
+/**
+ * **AutoPunchSettingsModal**
+ * 
+ * Configuration dialog for the Automatic Tool Placement algorithm.
+ * 
+ * **Features:**
+ * - **Tool Source:** Select whether to use all tools in the library or only those currently mounted on a specific Turret Layout.
+ * - **Geometry:** Configure overlaps, extensions, and scallop height for nibbling.
+ * - **Micro-joints:** Settings to automatically leave gaps in the contouring path to keep the part attached to the sheet.
+ * 
+ * @param {AutoPunchSettingsModalProps} props
+ */
+export const AutoPunchSettingsModal: React.FC<AutoPunchSettingsModalProps> = ({ onClose, onApply, turretLayouts }): React.JSX.Element => {
     
     const [settings, setSettings] = useState<AutoPunchSettings>({
         toolSourceType: 'library',
@@ -19,7 +35,7 @@ export const AutoPunchSettingsModal: React.FC<{
         overlap: 0.7,
         scallopHeight: 0.1,
         vertexTolerance: 2.5,
-        minToolUtilization: 0, // Hidden/Unused
+        minToolUtilization: 0, 
         
         toleranceRound: 2.5,
         toleranceRectLength: 2.5,
@@ -28,8 +44,12 @@ export const AutoPunchSettingsModal: React.FC<{
         microJointsEnabled: false,
         microJointType: 'auto',
         microJointLength: 1.5,
-        microJointDistance: 0, // Hidden/Unused
+        microJointDistance: 0,
     });
+
+    const handleUpdate = (updates: Partial<AutoPunchSettings>) => {
+        setSettings(prev => ({ ...prev, ...updates }));
+    };
 
     const handleApply = () => {
         onApply(settings);
@@ -45,144 +65,28 @@ export const AutoPunchSettingsModal: React.FC<{
 
                 <div className="p-6 space-y-6 overflow-y-auto flex-1 custom-scrollbar">
                     
-                    {/* --- 1. SOURCE & GENERAL --- */}
-                    <div className="grid grid-cols-2 gap-4">
-                        <fieldset className="border border-gray-600 p-3 rounded-md bg-gray-800/50">
-                            <legend className="px-2 font-semibold text-blue-400 text-xs uppercase">Источник инструмента</legend>
-                            <div className="space-y-3">
-                                <label className="flex items-center space-x-2 cursor-pointer">
-                                    <input 
-                                        type="radio" 
-                                        checked={settings.toolSourceType === 'turret'} 
-                                        onChange={() => setSettings(s => ({...s, toolSourceType: 'turret'}))}
-                                        className="form-radio h-4 w-4 text-blue-600 bg-gray-700 border-gray-500" 
-                                    />
-                                    <span className="text-sm text-gray-200">Только текущий револьвер</span>
-                                </label>
-                                
-                                <div className={`pl-6 transition-all ${settings.toolSourceType === 'turret' ? 'opacity-100' : 'opacity-50 pointer-events-none'}`}>
-                                    <select 
-                                        value={settings.turretLayoutId} 
-                                        onChange={e => setSettings(s=>({...s, turretLayoutId: e.target.value}))} 
-                                        className="w-full bg-gray-900 border border-gray-600 rounded-md px-2 py-1 text-sm text-gray-300 focus:ring-1 focus:ring-blue-500"
-                                    >
-                                        {turretLayouts.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-                                    </select>
-                                </div>
+                    <ToolSourcePanel 
+                        sourceType={settings.toolSourceType}
+                        turretLayoutId={settings.turretLayoutId || ''}
+                        useTeachCycles={settings.useTeachCycles}
+                        turretLayouts={turretLayouts}
+                        onUpdate={handleUpdate}
+                    />
 
-                                <label className="flex items-center space-x-2 cursor-pointer mt-2">
-                                    <input 
-                                        type="radio" 
-                                        checked={settings.toolSourceType === 'library'} 
-                                        onChange={() => setSettings(s => ({...s, toolSourceType: 'library'}))}
-                                        className="form-radio h-4 w-4 text-blue-600 bg-gray-700 border-gray-500" 
-                                    />
-                                    <span className="text-sm text-gray-200">Вся библиотека</span>
-                                </label>
-                            </div>
-                        </fieldset>
+                    <GeometrySettingsPanel 
+                        overlap={settings.overlap}
+                        extension={settings.extension}
+                        scallopHeight={settings.scallopHeight}
+                        vertexTolerance={settings.vertexTolerance}
+                        onUpdate={handleUpdate}
+                    />
 
-                        <fieldset className="border border-gray-600 p-3 rounded-md bg-gray-800/50">
-                            <legend className="px-2 font-semibold text-blue-400 text-xs uppercase">Логика</legend>
-                            <div className="space-y-3">
-                                <label className="flex items-center space-x-2 cursor-pointer">
-                                    <input 
-                                        type="checkbox" 
-                                        checked={settings.useTeachCycles} 
-                                        onChange={e => setSettings(s => ({...s, useTeachCycles: e.target.checked}))} 
-                                        className="form-checkbox h-4 w-4 text-blue-600 bg-gray-700 border-gray-500" 
-                                    />
-                                    <span className="text-sm text-gray-200">Использовать обучающие циклы</span>
-                                </label>
-                            </div>
-                        </fieldset>
-                    </div>
-
-                    {/* --- 2. GEOMETRY SETTINGS --- */}
-                    <fieldset className="border border-gray-600 p-3 rounded-md bg-gray-800/50">
-                        <legend className="px-2 font-semibold text-blue-400 text-xs uppercase">Геометрические параметры</legend>
-                        <div className="grid grid-cols-2 gap-x-6 gap-y-4">
-                            <div className="space-y-4">
-                                <h4 className="text-xs font-bold text-gray-500 uppercase border-b border-gray-700 pb-1">Линии (Прямоугольники)</h4>
-                                <ModalInputField 
-                                    label="Нахлест (мм)" 
-                                    type="number" 
-                                    value={settings.overlap} 
-                                    onChange={e => setSettings(s=>({...s, overlap: parseFloat(e.target.value) || 0}))} 
-                                    placeholder="0.7"
-                                />
-                                <ModalInputField 
-                                    label="Удлинение концов (мм)" 
-                                    type="number" 
-                                    value={settings.extension} 
-                                    onChange={e => setSettings(s=>({...s, extension: parseFloat(e.target.value) || 0}))} 
-                                    placeholder="1.0"
-                                />
-                            </div>
-                            <div className="space-y-4">
-                                <h4 className="text-xs font-bold text-gray-500 uppercase border-b border-gray-700 pb-1">Дуги (Круги)</h4>
-                                <ModalInputField 
-                                    label="Высота гребешка (Scallop) (мм)" 
-                                    type="number" 
-                                    value={settings.scallopHeight} 
-                                    onChange={e => setSettings(s=>({...s, scallopHeight: parseFloat(e.target.value) || 0}))} 
-                                    placeholder="0.25"
-                                />
-                                <ModalInputField 
-                                    label="Допуск вершин (мм)" 
-                                    type="number" 
-                                    value={settings.vertexTolerance} 
-                                    onChange={e => setSettings(s=>({...s, vertexTolerance: parseFloat(e.target.value) || 0}))} 
-                                />
-                            </div>
-                        </div>
-                    </fieldset>
-
-                    {/* --- 3. MICRO-JOINTS --- */}
-                    <fieldset className="border border-gray-600 p-3 rounded-md bg-gray-800/50">
-                        <legend className="px-2 font-semibold text-blue-400 text-xs uppercase">Перемычки (Micro-joints)</legend>
-                        
-                        <div className="mb-4">
-                            <label className="flex items-center space-x-2 cursor-pointer">
-                                <input 
-                                    type="checkbox" 
-                                    checked={settings.microJointsEnabled} 
-                                    onChange={e => setSettings(s=>({...s, microJointsEnabled: e.target.checked}))} 
-                                    className="form-checkbox h-5 w-5 text-blue-600 bg-gray-700 border-gray-500" 
-                                />
-                                <span className="font-bold text-sm text-white">Включить угловые/концевые перемычки</span>
-                            </label>
-                        </div>
-
-                        <div className={`grid grid-cols-2 gap-6 transition-opacity ${settings.microJointsEnabled ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
-                            <div className="space-y-2">
-                                <span className="text-xs text-gray-400 block mb-1">Ориентация</span>
-                                <label className="flex items-center space-x-2 cursor-pointer">
-                                    <input type="radio" checked={settings.microJointType === 'auto'} onChange={() => setSettings(s=>({...s, microJointType: 'auto'}))} className="form-radio h-4 w-4 text-blue-600 bg-gray-700 border-gray-500" />
-                                    <span className="text-sm text-gray-300">Авто-подбор (4 угла)</span>
-                                </label>
-                                <label className="flex items-center space-x-2 cursor-pointer">
-                                    <input type="radio" checked={settings.microJointType === 'vertical'} onChange={() => setSettings(s=>({...s, microJointType: 'vertical'}))} className="form-radio h-4 w-4 text-blue-600 bg-gray-700 border-gray-500" />
-                                    <span className="text-sm text-gray-300">Только вертикальные</span>
-                                </label>
-                                <label className="flex items-center space-x-2 cursor-pointer">
-                                    <input type="radio" checked={settings.microJointType === 'horizontal'} onChange={() => setSettings(s=>({...s, microJointType: 'horizontal'}))} className="form-radio h-4 w-4 text-blue-600 bg-gray-700 border-gray-500" />
-                                    <span className="text-sm text-gray-300">Только горизонтальные</span>
-                                </label>
-                            </div>
-                            <div className="space-y-3">
-                                <ModalInputField 
-                                    label="Размер перемычки (мм)" 
-                                    type="number" 
-                                    value={settings.microJointLength} 
-                                    onChange={e => setSettings(s=>({...s, microJointLength: parseFloat(e.target.value) || 0}))} 
-                                />
-                                <p className="text-[10px] text-gray-400 mt-1">
-                                    Отступ от вершин (углов) с обеих сторон.
-                                </p>
-                            </div>
-                        </div>
-                    </fieldset>
+                    <MicroJointsPanel 
+                        enabled={settings.microJointsEnabled}
+                        type={settings.microJointType}
+                        length={settings.microJointLength}
+                        onUpdate={handleUpdate}
+                    />
                 </div>
 
                 <div className="p-4 bg-gray-700/50 flex justify-end space-x-3 rounded-b-lg border-t border-gray-700">

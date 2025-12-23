@@ -4,19 +4,67 @@
  * Объединяет специализированные хуки состояния и подключает логику ручной пробивки.
  * Сохраняет интерфейс для useAppLogic.
  */
-import { Tool, PlacedTool } from '../types';
+import React from 'react';
+import { Tool, PlacedTool, Part, ManualPunchMode, SnapMode, NibbleSettings, DestructSettings } from '../types';
 import { useActivePartState } from './editor/useActivePartState';
 import { usePunchToolState } from './editor/usePunchToolState';
 import { usePunchSettingsState } from './editor/usePunchSettingsState';
 import { useTeachState } from './editor/useTeachState';
 import { useManualPunch } from './useManualPunch';
+import { ProcessedGeometry } from '../services/geometry';
 
 interface UseEditorStateProps {
     tools: Tool[];
     onAddPunches: (punches: Omit<PlacedTool, 'id'>[]) => void;
 }
 
-export const useEditorState = ({ tools, onAddPunches }: UseEditorStateProps) => {
+export interface UseEditorStateResult {
+    activePart: Part | null;
+    setActivePart: (part: Part | null | ((prev: Part | null) => Part | null)) => void;
+    activePartProcessedGeometry: ProcessedGeometry | null;
+    selectedToolId: string | null;
+    setSelectedToolId: (id: string | null) => void;
+    selectedPunchId: string | null;
+    setSelectedPunchId: (id: string | null) => void;
+    punchOrientation: number;
+    setPunchOrientation: (angle: number) => void;
+    snapMode: SnapMode;
+    setSnapMode: (mode: SnapMode) => void;
+    punchOffset: number;
+    setPunchOffset: (offset: number) => void;
+    selectedTool: Tool | null;
+    manualPunchMode: ManualPunchMode;
+    setManualPunchMode: (mode: ManualPunchMode) => void;
+    nibbleSettings: NibbleSettings;
+    setNibbleSettings: (settings: NibbleSettings) => void;
+    destructSettings: DestructSettings;
+    setDestructSettings: (settings: DestructSettings) => void;
+    teachMode: boolean;
+    setTeachMode: (val: boolean) => void;
+    selectedSegmentIds: number[];
+    setSelectedSegmentIds: React.Dispatch<React.SetStateAction<number[]>>;
+    selectedTeachPunchIds: string[];
+    setSelectedTeachPunchIds: React.Dispatch<React.SetStateAction<string[]>>;
+    manualPunch: ReturnType<typeof useManualPunch>;
+}
+
+/**
+ * **useEditorState**
+ * 
+ * Aggregates all state related to the single Part Editor view.
+ * Splits responsibilities into sub-hooks (`useActivePartState`, `usePunchToolState`, etc.)
+ * but exposes a unified API for the `App` component.
+ * 
+ * **Purpose:**
+ * - Manages the `ActivePart` currently being edited.
+ * - Tracks the selected Tool and Punch configuration (orientation, snap).
+ * - Manages the specific `ManualPunchMode` (Single, Nibble, Destruct).
+ * - Integrates the `useManualPunch` logic handler.
+ * 
+ * @param {UseEditorStateProps} props
+ * @returns {UseEditorStateResult}
+ */
+export const useEditorState = ({ tools, onAddPunches }: UseEditorStateProps): UseEditorStateResult => {
     // 1. Распределенное состояние
     const part = useActivePartState();
     const tool = usePunchToolState(tools);

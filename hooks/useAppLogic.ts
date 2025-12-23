@@ -4,13 +4,13 @@
  * Объединяет все специализированные хуки и определяет высокоуровневые функции (handlers).
  * ПРЕИМУЩЕСТВО: App.tsx становится чистым, а логика — типизированной и изолированной.
  */
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
     AppMode, Point, Tool, Part, PlacedTool, ScheduledPart, 
-    OptimizerSettings, PunchOp, TurretLayout, NestLayout 
+    OptimizerSettings, PunchOp, TurretLayout, NestLayout, AutoPunchSettings
 } from '../types';
 import { useAppPersistence } from './useAppPersistence';
-import { useEditorState } from './useEditorState';
+import { useEditorState, UseEditorStateResult } from './useEditorState';
 import { useNestingState } from './useNestingState';
 import { useSimulationState } from './useSimulationState';
 import { useUIState } from './useUIState';
@@ -21,13 +21,66 @@ import { useFileImport } from './useFileImport';
 // Services
 import { nestingGenerator } from '../services/nesting';
 import { generateGCode, calculateOptimizedPath } from '../services/gcode';
-import { findClosestSegment, detectPartProfile } from '../services/geometry';
-import { generateParametricScript } from '../services/scriptGenerator';
+import { findClosestSegment } from '../services/geometry';
 import { createTeachCycleFromSelection } from '../services/teachLogic';
 import { generateContourPunches } from '../services/punching';
-import { generateId, getPartBaseName, generatePartNameFromProfile } from '../utils/helpers';
+import { generateId } from '../utils/helpers';
 
-export const useAppLogic = () => {
+export interface UseAppLogicResult {
+    mode: AppMode;
+    setMode: React.Dispatch<React.SetStateAction<AppMode>>;
+    persistence: ReturnType<typeof useAppPersistence>;
+    ui: ReturnType<typeof useUIState>;
+    editor: UseEditorStateResult;
+    nesting: ReturnType<typeof useNestingState>;
+    simulation: ReturnType<typeof useSimulationState>;
+    confirmation: {
+        state: ReturnType<typeof useConfirmation>['confirmationState'];
+        confirm: ReturnType<typeof useConfirmation>['confirm'];
+        close: ReturnType<typeof useConfirmation>['closeConfirmation'];
+    };
+    panZoom: ReturnType<typeof usePanAndZoom>;
+    handlers: {
+        onRunOptimization: (finalSettings: OptimizerSettings) => void;
+        handleRunNesting: () => Promise<void>;
+        handleFileUpload: (event: React.ChangeEvent<HTMLInputElement>) => void;
+        downloadGCode: () => void;
+        onGenerateGCodeRequest: () => void;
+        onOptimizePathRequest: () => void;
+        onClearAllPunches: () => void;
+        onAutoPunchApply: (settings: AutoPunchSettings) => void;
+        onSaveTeachCycle: (name: string, symmetry: any) => void;
+    };
+    derived: {
+        activeNest: NestLayout | null;
+        currentNestSheet: import('../types').NestResultSheet | null;
+    };
+}
+
+/**
+ * **useAppLogic**
+ * 
+ * The central aggregation hook ("The Brain") for the entire CAD/CAM application.
+ * It follows the "Container/Presenter" pattern where this hook acts as the Container logic
+ * for the root `App` component.
+ * 
+ * **Responsibilities:**
+ * 1.  Aggregates sub-hooks (`persistence`, `editor`, `nesting`, `ui`, `simulation`).
+ * 2.  Manages high-level `AppMode` switching.
+ * 3.  Defines complex event handlers that cross domain boundaries (e.g., File Upload affecting Editor, Nesting affecting Simulation).
+ * 4.  Calculates derived state used by multiple child components.
+ * 
+ * **Usage:**
+ * ```tsx
+ * const App = () => {
+ *   const logic = useAppLogic();
+ *   return <AppUI {...logic} />;
+ * }
+ * ```
+ * 
+ * @returns {UseAppLogicResult} An object containing all state selectors and action dispatchers required by the UI.
+ */
+export const useAppLogic = (): UseAppLogicResult => {
     const [mode, setMode] = useState<AppMode>(AppMode.PartEditor);
     
     // --- 1. Состояние данных (Persistence) ---
@@ -38,22 +91,18 @@ export const useAppLogic = () => {
     const { confirmationState, confirm, closeConfirmation } = useConfirmation();
     
     // --- 3. Состояние редактора ---
-    const onAddPunches = useCallback((punchesData: Omit<PlacedTool, 'id'>[]) => {
-        persistence.setParts(prevParts => {
-            // We need to know which part is active. Since setActivePart is in useEditorState,
-            // we'll update the part there and then it will sync via closure if we're careful.
-            // But better: useEditorState manages activePart, we just update it.
-            return prevParts; // Stub, real update below
-        });
-    }, [persistence]);
-
     const editor = useEditorState({ 
         tools: persistence.tools, 
         onAddPunches: (data) => {
-            if (editor.activePart) {
-                const newPunches = data.map(p => ({ ...p, id: generateId() }));
-                editor.setActivePart({ ...editor.activePart, punches: [...editor.activePart.punches, ...newPunches] });
-            }
+            // Note: We use a callback pattern here to ensure we work with the latest state
+            // inside the editor hook's own state management if possible, but here we perform the logic
+            editor.setActivePart(currentPart => {
+                if (currentPart) {
+                    const newPunches = data.map(p => ({ ...p, id: generateId() }));
+                    return { ...currentPart, punches: [...currentPart.punches, ...newPunches] };
+                }
+                return null;
+            });
         }
     });
 
@@ -163,8 +212,9 @@ export const useAppLogic = () => {
                 nesting.setNestingStatus(update.status);
             }
             ui.addToast("Раскрой завершен", "success");
-        } catch(e:any) {
-            ui.addToast("Ошибка раскроя: " + e.message, "error");
+        } catch(e) {
+            const errorMsg = e instanceof Error ? e.message : String(e);
+            ui.addToast("Ошибка раскроя: " + errorMsg, "error");
         } finally {
             nesting.setIsNestingProcessing(false);
         }
@@ -196,7 +246,15 @@ export const useAppLogic = () => {
             onGenerateGCodeRequest: () => { if(!currentNestSheet) { ui.addToast("Нет листа", "error"); return; } ui.setIsGeneratingGCode(true); ui.setShowOptimizerModal(true); },
             onOptimizePathRequest: () => { if(!currentNestSheet) { ui.addToast("Нет листа", "error"); return; } ui.setIsGeneratingGCode(false); ui.setShowOptimizerModal(true); },
             onClearAllPunches: () => confirm("Очистка", "Удалить все инструменты?", () => { editor.setActivePart(p => p ? {...p, punches: []} : null); ui.addToast("Инструменты удалены", "info"); }),
-            onAutoPunchApply: (s: any) => { const p = generateContourPunches(editor.activePart!.geometry, persistence.tools, s, persistence.turretLayouts, persistence.teachCycles); if (editor.activePart) { const newPunches = p.map(px => ({...px, id: generateId()})); editor.setActivePart({...editor.activePart, punches: [...editor.activePart.punches, ...newPunches]}); } ui.setShowAutoPunchSettingsModal(false); ui.addToast(`Сгенерировано: ${p.length}`, "success"); },
+            onAutoPunchApply: (s: AutoPunchSettings) => { 
+                const p = generateContourPunches(editor.activePart!.geometry, persistence.tools, s, persistence.turretLayouts, persistence.teachCycles); 
+                if (editor.activePart) { 
+                    const newPunches = p.map(px => ({...px, id: generateId()})); 
+                    editor.setActivePart(prev => prev ? {...prev, punches: [...prev.punches, ...newPunches]} : null); 
+                } 
+                ui.setShowAutoPunchSettingsModal(false); 
+                ui.addToast(`Сгенерировано: ${p.length}`, "success"); 
+            },
             onSaveTeachCycle: (name: string, symmetry: any) => {
                 const cycle = createTeachCycleFromSelection(name, symmetry, editor.selectedSegmentIds, editor.selectedTeachPunchIds, editor.activePart!, editor.activePartProcessedGeometry!);
                 if (cycle) { persistence.setTeachCycles(prev => [...prev, cycle]); editor.setTeachMode(false); }
