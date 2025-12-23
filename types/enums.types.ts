@@ -1,7 +1,7 @@
 
 /**
- * Global application enums and constants.
- * Contains core system modes and fixed value selections.
+ * СИСТЕМНЫЕ ПЕРЕЧИСЛЕНИЯ (ENUMS)
+ * Ответственность: Определение фиксированных режимов работы, форм инструментов и стратегий.
  */
 
 export enum AppMode {

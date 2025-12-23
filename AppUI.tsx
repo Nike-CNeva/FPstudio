@@ -5,8 +5,11 @@
  * НЕ ДОЛЖЕН СОДЕРЖАТЬ: React хуки или бизнес-логику.
  */
 import React from 'react';
-// FIX: Added TurretLayout to the imports from types.ts
-import { AppMode, Part, Tool, ManualPunchMode, SnapMode, NibbleSettings, DestructSettings, TeachCycle, ToastMessage, MachineSettings, OptimizerSettings, PunchOp, NestLayout, NestResultSheet, ScheduledPart, TurretLayout } from './types';
+import { 
+    AppMode, Part, Tool, ManualPunchMode, SnapMode, NibbleSettings, 
+    DestructSettings, TeachCycle, ToastMessage, MachineSettings, 
+    OptimizerSettings, PunchOp, NestLayout, ScheduledPart, TurretLayout 
+} from './types';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { RightPanel } from './components/RightPanel';
@@ -31,7 +34,7 @@ interface AppUIProps {
     parts: Part[];
     scripts: any[];
     nests: NestLayout[];
-    turretLayouts: any[];
+    turretLayouts: TurretLayout[];
     machineSettings: MachineSettings;
     optimizerSettings: OptimizerSettings;
     teachCycles: TeachCycle[];
@@ -39,19 +42,28 @@ interface AppUIProps {
     activePart: Part | null;
     activePartProcessedGeometry: any;
     manualPunchMode: ManualPunchMode;
+    setManualPunchMode: (m: ManualPunchMode) => void;
     selectedToolId: string | null;
+    setSelectedToolId: (id: string | null) => void;
     selectedPunchId: string | null;
+    setSelectedPunchId: (id: string | null) => void;
     punchOrientation: number;
+    setPunchOrientation: (v: number) => void;
     snapMode: SnapMode;
+    setSnapMode: (m: SnapMode) => void;
     punchOffset: number;
+    setPunchOffset: (v: number) => void;
     nibbleSettings: NibbleSettings;
+    setNibbleSettings: (s: NibbleSettings) => void;
     destructSettings: DestructSettings;
+    setDestructSettings: (s: DestructSettings) => void;
     teachMode: boolean;
     selectedSegmentIds: number[];
     selectedTeachPunchIds: string[];
     // Nesting State
     activeNest: NestLayout | null;
     activeSheetIndex: number;
+    setActiveSheetIndex: (i: number) => void;
     selectedNestPartId: string | null;
     isNestingProcessing: boolean;
     nestingProgress: number;
@@ -203,7 +215,7 @@ export const AppUI: React.FC<AppUIProps> = (props) => {
                             selectedToolId={props.selectedToolId}
                             selectedPunchId={props.selectedPunchId}
                             onSelectPunch={props.setSelectedPunchId}
-                            placementReference={0 as any} // Mock, not really used in CanvasArea props but interface expects it
+                            placementReference={0 as any} 
                             placementSide={0 as any}
                             punchOrientation={props.punchOrientation}
                             snapMode={props.snapMode}
@@ -281,6 +293,7 @@ export const AppUI: React.FC<AppUIProps> = (props) => {
                 )}
             </div>
 
+            {/* Модальные окна */}
             {ui.showAutoPunchSettingsModal && activePart && (
                 <AutoPunchSettingsModal 
                     onClose={() => ui.setShowAutoPunchSettingsModal(false)}

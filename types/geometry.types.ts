@@ -1,8 +1,8 @@
 
 /**
- * Types related to geometry entities (DXF, SVG, bounding boxes)
- * This file should contain only structural geometry contracts.
- * UI, business logic, and services must NOT be here.
+ * ГЕОМЕТРИЧЕСКИЕ ПРИМИТИВЫ И DXF
+ * Ответственность: Описание структуры точек, линий, дуг и полилиний.
+ * Используется в парсерах и сервисах топологии.
  */
 
 export interface Point {

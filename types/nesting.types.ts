@@ -1,51 +1,43 @@
 
+/**
+ * РАСКРОЙ (NESTING)
+ * Ответственность: Описание заготовок (листов), настроек алгоритма и итоговых карт раскроя.
+ */
 import { PlacedPart, NestingConstraints } from './parts.types';
 import { SheetUtilizationStrategy } from './enums.types';
-
-/**
- * Domain: Nesting Operations and Sheet Management.
- * Types for sheet stocks, nesting settings, and resulting layouts.
- */
 
 export interface SheetStock {
     id: string;
     width: number;
     height: number;
-    quantity: number; // "Reserved" count
+    quantity: number;
     material: string;
     thickness: number;
     cost: number;
-    useInNesting: boolean; // For 'selected-only' strategy
+    useInNesting: boolean;
 }
 
 export interface NestingSettings {
   availableSheets: SheetStock[];
-  activeSheetId: string | null; // Currently selected for editing or primary use
+  activeSheetId: string | null;
   
-  // Global Sheet Params
   defaultMaterial: string;
   defaultThickness: number;
 
-  // General Params
   partSpacingX: number;
   partSpacingY: number;
   sheetMarginTop: number;
   sheetMarginBottom: number;
   sheetMarginLeft: number;
   sheetMarginRight: number;
-  nestingDirection: number; // 0-8 for a 3x3 grid, representing start corner/edge
+  nestingDirection: number; 
   clampPositions: number[];
   nestUnderClamps: boolean;
-  loadingStopId: number; // 0 = Auto, 1, 2, 3, 4
+  loadingStopId: number; 
   
-  // Strategy
   utilizationStrategy: SheetUtilizationStrategy;
-
-  // Optimization
   useCommonLine: boolean;
-  vertexSnapping: boolean; // Auto alignment
-  
-  // New Flag
+  vertexSnapping: boolean; 
   nestAsRectangle: boolean; 
 }
 
@@ -53,22 +45,22 @@ export interface ScheduledPart {
     partId: string;
     quantity: number;
     priority?: number; 
-    nesting: NestingConstraints; // Modified to store full nesting config per scheduled item
+    nesting: NestingConstraints;
 }
 
 export interface NestResultSheet {
     id: string;
-    sheetName: string; // e.g. "Sheet 1"
+    sheetName: string;
     stockSheetId: string;
     width: number;
     height: number;
     material: string;
     thickness: number;
     placedParts: PlacedPart[];
-    usedArea: number; // Percentage 0-100
+    usedArea: number; 
     scrapPercentage: number;
     partCount: number;
-    quantity: number; // How many of this identical sheet layout
+    quantity: number; 
 }
 
 export interface NestLayout {
@@ -77,6 +69,6 @@ export interface NestLayout {
   customer?: string;
   workOrder?: string;
   settings: NestingSettings;
-  sheets: NestResultSheet[]; // Multiple resulting sheets
+  sheets: NestResultSheet[];
   scheduledParts: ScheduledPart[];
 }

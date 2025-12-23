@@ -1,31 +1,39 @@
 
 /**
- * ОТВЕТСТВЕННОСТЬ: Управление персистентным состоянием (localStorage).
- * ДОЛЖЕН СОДЕРЖАТЬ: Все вызовы useLocalStorage для инструментов, деталей, настроек и т.д.
- * НЕ ДОЛЖЕН СОДЕРЖАТЬ: Логику обработки (бизнес-логику) или JSX.
+ * СЕРВИС ХРАНЕНИЯ (Агрегатор)
+ * Объединяет тематические хуки персистентности.
+ * Сохраняет интерфейс для useAppLogic без необходимости его переписывания.
  */
-import { useLocalStorage } from './useLocalStorage';
-import { Tool, Part, ParametricScript, NestLayout, TurretLayout, MachineSettings, OptimizerSettings, TeachCycle } from '../types';
-import { initialTools, initialParts, initialNests, initialTurretLayouts, initialScripts, defaultMachineSettings, defaultOptimizerSettings } from '../data/initialData';
+import { useLibraryPersistence } from './persistence/useLibraryPersistence';
+import { useNestingPersistence } from './persistence/useNestingPersistence';
+import { useMachinePersistence } from './persistence/useMachinePersistence';
 
 export const useAppPersistence = () => {
-    const [tools, setTools] = useLocalStorage<Tool[]>('fp_tools', initialTools);
-    const [parts, setParts] = useLocalStorage<Part[]>('fp_parts', initialParts);
-    const [scripts, setScripts] = useLocalStorage<ParametricScript[]>('fp_scripts', initialScripts);
-    const [nests, setNests] = useLocalStorage<NestLayout[]>('fp_nests', initialNests);
-    const [turretLayouts, setTurretLayouts] = useLocalStorage<TurretLayout[]>('fp_turret_layouts', initialTurretLayouts);
-    const [machineSettings, setMachineSettings] = useLocalStorage<MachineSettings>('fp_machine_settings', defaultMachineSettings);
-    const [optimizerSettings, setOptimizerSettings] = useLocalStorage<OptimizerSettings>('fp_optimizer_settings', defaultOptimizerSettings);
-    const [teachCycles, setTeachCycles] = useLocalStorage<TeachCycle[]>('fp_teach_cycles', []);
+    const library = useLibraryPersistence();
+    const nesting = useNestingPersistence();
+    const machine = useMachinePersistence();
 
     return {
-        tools, setTools,
-        parts, setParts,
-        scripts, setScripts,
-        nests, setNests,
-        turretLayouts, setTurretLayouts,
-        machineSettings, setMachineSettings,
-        optimizerSettings, setOptimizerSettings,
-        teachCycles, setTeachCycles
+        // Library
+        tools: library.tools,
+        setTools: library.setTools,
+        parts: library.parts,
+        setParts: library.setParts,
+        scripts: library.scripts,
+        setScripts: library.setScripts,
+        teachCycles: library.teachCycles,
+        setTeachCycles: library.setTeachCycles,
+
+        // Nesting
+        nests: nesting.nests,
+        setNests: nesting.setNests,
+
+        // Machine & Post-processor
+        turretLayouts: machine.turretLayouts,
+        setTurretLayouts: machine.setTurretLayouts,
+        machineSettings: machine.machineSettings,
+        setMachineSettings: machine.setMachineSettings,
+        optimizerSettings: machine.optimizerSettings,
+        setOptimizerSettings: machine.setOptimizerSettings
     };
 };

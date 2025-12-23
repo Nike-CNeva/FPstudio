@@ -1,64 +1,62 @@
 
-import { ToolShape, PunchType } from './enums.types';
-
 /**
- * Domain: Tools and Turret Layouts.
- * Includes tool definitions, turret stations, and placed tool instances.
+ * ИНСТРУМЕНТ И РЕВОЛЬВЕР
+ * Ответственность: Описание физических параметров пуансонов, матриц и конфигурации револьверной головки.
  */
+import { ToolShape, PunchType } from './enums.types';
 
 export interface Tool {
   id: string;
   name: string;
   
-  // Basic Info
+  // Геометрия
   shape: ToolShape;
-  width: number; // X-dimension
-  height: number; // Y-dimension
+  width: number; // Размер X
+  height: number; // Размер Y
   cornerRadius: number;
-  toolSize: string; // 'A', 'B', 'C', 'D'
+  toolSize: string; // Станция: 'A', 'B', 'C', 'D'
   description: string;
-  customPath?: string; // For Special tools loaded via DXF
+  customPath?: string; // Для DXF-инструментов Special
   
   punchType: PunchType;
 
-  // Turret Info
-  stationNumber?: number; // 1-24 typically
-  stationType?: string; // 'B', 'C', 'D', 'MT', etc.
-  mtIndex?: number; // 1-20 if inside a MultiTool
+  // Параметры в станке
+  stationNumber?: number;
+  stationType?: string; 
+  mtIndex?: number; // Позиция в MultiTool (1-24)
   defaultRotation?: number;
 
-  // Dies
+  // Матрицы
   dies: {
     clearance: number;
   }[];
   
-  // Settings
+  // Технологические параметры
   stripperHeight: number;
   punchDepth: number;
   ramSpeed: number;
   acceleration: number;
-  operatingMode: string; // e.g. 'PUNCHING'
+  operatingMode: string; 
   
-  // Miscellaneous
+  // Приоритеты
   nibblingPriority: number;
   punchPriority: number;
   punchCount: number;
   isAutoIndex: boolean;
   
-  // Key/slots
+  // Ключи ориентации
   keyAngles: number[];
   
-  // Optimizing
+  // Оптимизация
   optimizingGroup: string;
   awayFromClamps: boolean;
-  motionPrinciple: string; // e.g. 'Minimum distance'
+  motionPrinciple: string;
 
-  // Close to clamp tool
+  // Защита прижимов
   relievedStripper: '1-sided' | '2-sided' | 'none';
   yProtectionArea: number;
   zoneWidth: number;
 
-  // Extra
   onlyForC5: boolean;
 }
 
@@ -71,7 +69,6 @@ export interface StationConfig {
 export interface TurretLayout {
     id: string;
     name: string;
-    // Mapping: Station Number -> Tool ID (or null)
     toolsSnapshot: Tool[]; 
     stations: StationConfig[];
 }
@@ -82,7 +79,5 @@ export interface PlacedTool {
   x: number;
   y: number;
   rotation: number;
-  
-  // Grouping for script generation
-  lineId?: string; // If present, this tool is part of a nibble line with this ID
+  lineId?: string; // Связь в группу (высечка)
 }
