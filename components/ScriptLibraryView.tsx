@@ -1,39 +1,39 @@
 
 import React, { useState, useEffect } from 'react';
 import { ParametricScript, Tool, Part, PartProfile, ScheduledPart } from '../types';
-import { TrashIcon, CodeIcon, SaveIcon, PlayIcon, PlusIcon, FileExcelIcon } from './Icons';
+import { TrashIcon, PlusIcon } from './Icons';
 import { SidebarTabButton } from './common/Button';
 import { executeParametricScript } from '../services/scriptExecutor';
 import { generateId, generatePartNameFromProfile } from '../utils/helpers';
 import { ExcelImportModal } from './ExcelImportModal';
 import { detectPartProfile } from '../services/geometry';
-import * as XLSX from 'xlsx';
 import { ModalInputField } from './common/InputField';
+import { ScriptList } from './scripts/ScriptList';
+import { useScriptFilter } from '../hooks/library/useScriptFilter';
 
 interface ScriptLibraryViewProps {
     scripts: ParametricScript[];
     tools: Tool[];
-    parts: Part[]; // Existing concrete parts for lookup
+    parts: Part[];
     onSaveScript: (script: ParametricScript) => void;
     onDeleteScript: (id: string) => void;
     onCreatePart: (part: Part) => void;
     onBatchProcess: (newParts: Part[], scheduledParts: ScheduledPart[]) => void;
 }
 
-export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ scripts, tools, parts, onSaveScript, onDeleteScript, onCreatePart, onBatchProcess }) => {
+export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ 
+    scripts, tools, onSaveScript, onDeleteScript, onCreatePart, onBatchProcess 
+}) => {
     const [selectedScriptId, setSelectedScriptId] = useState<string | null>(null);
-    const [searchQuery, setSearchQuery] = useState('');
+    const { searchQuery, setSearchQuery, filteredScripts } = useScriptFilter(scripts);
     const [activeTab, setActiveTab] = useState<'run' | 'edit'>('run');
 
     // Run State
     const [runWidth, setRunWidth] = useState(500);
     const [runHeight, setRunHeight] = useState(300);
-    
-    // Profile State for Generator (Auto-detected)
     const [profileType, setProfileType] = useState<PartProfile['type']>('flat');
     const [orientation, setOrientation] = useState<PartProfile['orientation']>('vertical');
     const [dims, setDims] = useState({ a: 100, b: 300, c: 100 });
-
     const [previewPart, setPreviewPart] = useState<Part | null>(null);
     const [previewError, setPreviewError] = useState<string | null>(null);
 
@@ -41,25 +41,15 @@ export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ scripts, t
     const [editCode, setEditCode] = useState('');
     const [editName, setEditName] = useState('');
 
-    // Excel Import State
     const [showExcelModal, setShowExcelModal] = useState(false);
-
     const selectedScript = scripts.find(s => s.id === selectedScriptId);
 
-    const filteredScripts = scripts.filter(s => 
-        s.name.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-
-    // On select script
     useEffect(() => {
         if (selectedScript) {
             const code = selectedScript.code;
-            
-            // Auto-detect profile from script content markers
             let newType: PartProfile['type'] = 'flat';
             let newOrient: PartProfile['orientation'] = 'vertical';
 
-            // Check for new markers
             if (code.includes('// L-Profile Vertical') || code.includes('L-профиль (vertical)')) {
                 newType = 'L'; newOrient = 'vertical';
             } else if (code.includes('// L-Profile Horizontal') || code.includes('L-профиль (horizontal)')) {
@@ -72,18 +62,10 @@ export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ scripts, t
 
             setProfileType(newType);
             setOrientation(newOrient);
-            
             setRunWidth(selectedScript.defaultWidth);
             setRunHeight(selectedScript.defaultHeight);
-            
-            // Initialize dims roughly based on default size
             const initA = Math.floor(selectedScript.defaultWidth / 3) || 50;
-            setDims({ 
-                a: initA, 
-                b: Math.floor(selectedScript.defaultWidth / 3) || 50, 
-                c: initA 
-            });
-
+            setDims({ a: initA, b: Math.floor(selectedScript.defaultWidth / 3) || 50, c: initA });
             setEditCode(selectedScript.code);
             setEditName(selectedScript.name);
         } else {
@@ -91,130 +73,57 @@ export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ scripts, t
         }
     }, [selectedScriptId]);
 
-    // Recalculate dimensions and regenerate preview when parameters change
     useEffect(() => {
         if (!selectedScript) return;
-
-        let newW = runWidth;
-        let newH = runHeight;
-
-        if (profileType === 'flat') {
-            // No change needed
-        } else if (profileType === 'L') {
-            if (orientation === 'vertical') {
-                newW = dims.a + dims.b;
-            } else {
-                newH = dims.a + dims.b;
-            }
+        let newW = runWidth, newH = runHeight;
+        if (profileType === 'L') {
+            if (orientation === 'vertical') newW = dims.a + dims.b; else newH = dims.a + dims.b;
         } else if (profileType === 'U') {
-            if (orientation === 'vertical') {
-                newW = dims.a + dims.b + dims.c;
-            } else {
-                newH = dims.a + dims.b + dims.c;
-            }
+            if (orientation === 'vertical') newW = dims.a + dims.b + dims.c; else newH = dims.a + dims.b + dims.c;
         }
-
-        // Update state if calculated dimensions changed
-        if (newW !== runWidth || newH !== runHeight) {
-            setRunWidth(newW);
-            setRunHeight(newH);
-        }
-        
-        // Always regenerate using current code, new W/H, and current params
+        if (newW !== runWidth || newH !== runHeight) { setRunWidth(newW); setRunHeight(newH); }
         generatePreview(editCode, newW, newH, dims);
-
     }, [dims, profileType, orientation]); 
-    // Note: We don't depend on editCode here to avoid loop with editor typing, 
-    // editor handles its own preview update on change.
 
     const generatePreview = (code: string, w: number, h: number, parameters: any) => {
         try {
             const basePart: Part = {
-                id: 'temp_preview',
-                name: 'Preview',
-                faceWidth: w,
-                faceHeight: h,
+                id: 'temp_preview', name: 'Preview', faceWidth: w, faceHeight: h,
                 geometry: { path: '', width: w, height: h, entities: [], bbox: {minX:0,minY:0,maxX:w,maxY:h} },
-                punches: [],
-                material: { code: 'St-3', thickness: 1, dieClearance: 0.2 },
+                punches: [], material: { code: 'St-3', thickness: 1, dieClearance: 0.2 },
                 nesting: { allow0_180: true, allow90_270: true, initialRotation: 0, commonLine: false, canMirror: false }
             };
-            
-            // Execute with params
-            const generated = executeParametricScript(basePart, code, tools, w, h, parameters);
-            setPreviewPart(generated);
+            setPreviewPart(executeParametricScript(basePart, code, tools, w, h, parameters));
             setPreviewError(null);
-        } catch (e: any) {
-            console.error(e);
-            setPreviewError(e.message);
-            setPreviewPart(null);
-        }
+        } catch (e: any) { setPreviewError(e.message); setPreviewPart(null); }
     };
 
     const handleManualSizeChange = (w: number, h: number) => {
-        if (profileType === 'flat') {
-            setRunWidth(w);
-            setRunHeight(h);
-            generatePreview(editCode, w, h, dims); 
-        } else {
-            // For profiles, we only allow manual update of the "Cross" dimension
-            if (orientation === 'vertical') {
-                setRunHeight(h);
-                generatePreview(editCode, runWidth, h, dims);
-            } else {
-                setRunWidth(w);
-                generatePreview(editCode, w, runHeight, dims);
-            }
+        if (profileType === 'flat') { setRunWidth(w); setRunHeight(h); generatePreview(editCode, w, h, dims); } 
+        else {
+            if (orientation === 'vertical') { setRunHeight(h); generatePreview(editCode, runWidth, h, dims); } 
+            else { setRunWidth(w); generatePreview(editCode, w, runHeight, dims); }
         }
     };
 
     const handleCreateConcretePart = () => {
         if (previewPart && selectedScript) {
-            const profile = {
-                type: profileType,
-                orientation: orientation,
-                dims: { ...dims }
-            };
-            
-            // Use the centralized naming logic
-            const partName = generatePartNameFromProfile(
-                selectedScript.name, 
-                profile, 
-                runWidth, 
-                runHeight
-            );
-
-            const newPart = {
-                ...previewPart,
-                id: generateId(),
-                name: partName,
-                profile: profile
-            };
-            if (profileType === 'flat') {
-                 newPart.profile = detectPartProfile(newPart.geometry);
-            }
+            const profile = { type: profileType, orientation: orientation, dims: { ...dims } };
+            const partName = generatePartNameFromProfile(selectedScript.name, profile, runWidth, runHeight);
+            const newPart = { ...previewPart, id: generateId(), name: partName, profile: profile };
+            if (profileType === 'flat') newPart.profile = detectPartProfile(newPart.geometry);
             onCreatePart(newPart);
         }
     };
 
     const handleSaveEdit = () => {
         if (selectedScript) {
-            onSaveScript({
-                ...selectedScript,
-                name: editName,
-                code: editCode,
-                defaultWidth: runWidth,
-                defaultHeight: runHeight,
-                updatedAt: Date.now()
-            });
+            onSaveScript({ ...selectedScript, name: editName, code: editCode, defaultWidth: runWidth, defaultHeight: runHeight, updatedAt: Date.now() });
         }
     };
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
-        if (e.key === 'Delete' && selectedScriptId) {
-            onDeleteScript(selectedScriptId);
-            setSelectedScriptId(null); 
-        }
+        if (e.key === 'Delete' && selectedScriptId) { onDeleteScript(selectedScriptId); setSelectedScriptId(null); }
     };
 
     const getLabel = (key: 'a'|'b'|'c') => {
@@ -230,47 +139,15 @@ export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ scripts, t
 
     return (
         <main className="flex-1 bg-gray-800 flex overflow-hidden h-full" onKeyDown={handleKeyDown} tabIndex={0}>
-            {/* Left Panel */}
-            <div className="w-1/3 min-w-[300px] flex flex-col border-r border-gray-700 bg-gray-900/30">
-                <div className="p-4 border-b border-gray-700 bg-gray-800">
-                    <div className="flex justify-between items-center mb-3">
-                        <h2 className="text-lg font-bold text-white flex items-center">
-                            <CodeIcon className="w-5 h-5 mr-2 text-purple-400" />
-                            Библиотека
-                        </h2>
-                        <button 
-                            onClick={() => setShowExcelModal(true)} 
-                            className="bg-green-600 hover:bg-green-500 text-white p-2 rounded shadow text-xs flex items-center space-x-1"
-                            title="Импорт из Excel"
-                        >
-                            <FileExcelIcon className="w-4 h-4" />
-                            <span>Импорт</span>
-                        </button>
-                    </div>
-                    <input 
-                        type="text" 
-                        placeholder="Поиск..." 
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="w-full bg-gray-900 border border-gray-600 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    />
-                </div>
-                <div className="flex-1 overflow-y-auto">
-                    <div className="divide-y divide-gray-700">
-                        {filteredScripts.map(script => (
-                            <div 
-                                key={script.id} 
-                                onClick={() => setSelectedScriptId(script.id)}
-                                className={`p-3 cursor-pointer transition-colors ${selectedScriptId === script.id ? 'bg-purple-900/50 text-white border-l-4 border-purple-500' : 'hover:bg-gray-700 text-gray-300 border-l-4 border-transparent'}`}
-                            >
-                                <div className="font-semibold truncate">{script.name}</div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            </div>
+            <ScriptList 
+                scripts={filteredScripts}
+                selectedScriptId={selectedScriptId}
+                onSelect={setSelectedScriptId}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                onExcelImportClick={() => setShowExcelModal(true)}
+            />
 
-            {/* Right Panel */}
             <div className="flex-1 flex flex-col bg-gray-800 relative">
                 {selectedScript ? (
                     <div className="flex flex-col h-full">
@@ -362,7 +239,7 @@ export const ScriptLibraryView: React.FC<ScriptLibraryViewProps> = ({ scripts, t
                 <ExcelImportModal 
                     onClose={() => setShowExcelModal(false)} 
                     scripts={scripts}
-                    parts={parts}
+                    parts={[]}
                     tools={tools}
                     onProcess={onBatchProcess}
                 />

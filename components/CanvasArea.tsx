@@ -1,12 +1,14 @@
 
-import React, { MouseEvent, WheelEvent, useState, useRef } from 'react';
+import React from 'react';
 import { AppMode, NestLayout, Part, Tool, Point, ManualPunchMode, PlacementReference, SnapMode, PlacementSide, NestResultSheet, PunchOp } from '../types';
 import { ActionButton } from './common/Button';
 import { SettingsIcon, PlusIcon, MinusIcon, MaximizeIcon } from './Icons';
-import { ProcessedGeometry, isPointInRectangle, calculateNestingSnap } from '../services/geometry';
+import { ProcessedGeometry } from '../services/geometry';
 import { ViewBox } from '../hooks/usePanAndZoom';
 import { PartEditorCanvas } from './canvas/PartEditorCanvas';
 import { NestingCanvas } from './canvas/NestingCanvas';
+import { useCanvasNavigation } from '../hooks/canvas/useCanvasNavigation';
+import { useCanvasInteraction } from '../hooks/canvas/useCanvasInteraction';
 
 interface CanvasAreaProps {
     mode: AppMode;
@@ -16,25 +18,13 @@ interface CanvasAreaProps {
     currentNestSheet?: NestResultSheet | null; 
     tools: Tool[];
     parts: Part[];
-    
-    // Pan and Zoom
     svgRef: React.RefObject<SVGSVGElement>;
-    viewBox: { x: number, y: number, width: number, height: number };
+    viewBox: ViewBox;
     setViewBox: React.Dispatch<React.SetStateAction<ViewBox>>;
     isDragging: boolean;
-    getPointFromEvent: (event: MouseEvent<SVGSVGElement>) => Point;
-    panZoomHandlers: {
-        onWheel: (event: WheelEvent<SVGSVGElement>) => void;
-        onMouseDown: (event: MouseEvent<SVGSVGElement>) => void;
-        onMouseMove: (event: MouseEvent<SVGSVGElement>) => void;
-        onMouseUp: (event: MouseEvent<SVGSVGElement>) => void;
-        onMouseLeave: (event: MouseEvent<SVGSVGElement>) => void;
-    };
-    
-    // Actions
+    getPointFromEvent: (event: React.MouseEvent<SVGSVGElement>) => Point;
+    panZoomHandlers: any;
     onOpenAutoPunchSettings: () => void;
-
-    // Manual Punching
     punchCreationStep: number;
     punchCreationPoints: Point[];
     manualPunchMode: ManualPunchMode;
@@ -46,22 +36,14 @@ interface CanvasAreaProps {
     punchOrientation: number;
     punchOffset: number;
     snapMode: SnapMode;
-    
-    // Settings
     nibbleSettings: any; 
-    
-    // Teach Mode
     teachMode?: boolean;
     selectedSegmentIds?: number[];
     selectedTeachPunchIds?: string[];
     onTeachBulkSelect?: (segmentIndices: number[], punchIds: string[], add: boolean) => void;
-
-    // Nesting Interaction
     selectedNestPartId?: string | null;
     onSelectNestPart?: (id: string | null) => void;
     onMoveNestPart?: (id: string, dx: number, dy: number) => void;
-
-    // Optimization / Simulation
     optimizedOperations?: PunchOp[] | null;
     simulationStep?: number;
 }
@@ -78,192 +60,26 @@ const GridDefs: React.FC = () => (
     </defs>
 );
 
-export const CanvasArea: React.FC<CanvasAreaProps> = ({
-    mode, activePart, processedGeometry, activeNest, currentNestSheet, tools, parts,
-    svgRef, viewBox, setViewBox, isDragging, getPointFromEvent, panZoomHandlers,
-    onOpenAutoPunchSettings, 
-    punchCreationStep, punchCreationPoints, manualPunchMode, selectedToolId,
-    selectedPunchId, onSelectPunch, placementReference, placementSide, punchOrientation, snapMode,
-    punchOffset, nibbleSettings,
-    teachMode = false, selectedSegmentIds = [], selectedTeachPunchIds = [], onTeachBulkSelect,
-    selectedNestPartId, onSelectNestPart, onMoveNestPart,
-    optimizedOperations, simulationStep = 0
-}) => {
-    const [mousePos, setMousePos] = useState<Point | null>(null);
-    
-    // Selection Box State
-    const [selectionStart, setSelectionStart] = useState<Point | null>(null);
-    const [selectionCurrent, setSelectionCurrent] = useState<Point | null>(null);
-    const isSelectingRef = useRef(false);
+export const CanvasArea: React.FC<CanvasAreaProps> = (props) => {
+    const { mode, activePart, processedGeometry, activeNest, currentNestSheet, tools, parts, teachMode, manualPunchMode, simulationStep, optimizedOperations, selectedPunchId, onSelectPunch } = props;
 
-    // Nesting Drag State
-    const [draggingNestPartId, setDraggingNestPartId] = useState<string | null>(null);
-    const lastDragPos = useRef<Point | null>(null);
+    // 1. Инкапсулированная навигация
+    const { handleZoomIn, handleZoomOut, handleFit } = useCanvasNavigation({
+        mode, activePart, activeNest, currentNestSheet, setViewBox: props.setViewBox
+    });
 
-    const getModelPoint = (e: MouseEvent<SVGSVGElement>): Point => {
-        const pt = getPointFromEvent(e);
-        return { x: pt.x, y: -pt.y }; // Invert Y from View to Model
-    };
+    // 2. Инкапсулированное взаимодействие
+    const { mousePos, selectionStart, selectionCurrent, interactionHandlers } = useCanvasInteraction({
+        mode, activeNest, currentNestSheet, parts, processedGeometry, activePart,
+        teachMode: !!teachMode,
+        isDragging: props.isDragging,
+        getPointFromEvent: props.getPointFromEvent,
+        panZoomHandlers: props.panZoomHandlers,
+        onSelectNestPart: props.onSelectNestPart,
+        onMoveNestPart: props.onMoveNestPart,
+        onTeachBulkSelect: props.onTeachBulkSelect
+    });
 
-    const handleZoomIn = () => {
-        setViewBox(prev => ({
-            x: prev.x + prev.width * 0.1, 
-            y: prev.y + prev.height * 0.1,
-            width: prev.width * 0.8, 
-            height: prev.height * 0.8
-        }));
-    };
-
-    const handleZoomOut = () => {
-        setViewBox(prev => ({
-            x: prev.x - prev.width * 0.1, 
-            y: prev.y - prev.height * 0.1,
-            width: prev.width * 1.2, 
-            height: prev.height * 1.2
-        }));
-    };
-
-    const handleFit = () => {
-        if (mode === AppMode.PartEditor && activePart) {
-             setViewBox({
-                x: -5,
-                y: -activePart.geometry.height - 5,
-                width: activePart.geometry.width + 10,
-                height: activePart.geometry.height + 10
-            });
-        } else if (mode === AppMode.Nesting && activeNest) {
-             let width = 2500;
-             let height = 1250;
-             if (currentNestSheet) {
-                 width = currentNestSheet.width;
-                 height = currentNestSheet.height;
-             } else {
-                 const stock = activeNest.settings.availableSheets.find(s => s.id === activeNest.settings.activeSheetId) || activeNest.settings.availableSheets[0];
-                 if(stock) { width = stock.width; height = stock.height; }
-             }
-             setViewBox({ x: -50, y: -height - 50, width: width + 100, height: height + 100 });
-        }
-    };
-
-    const handleMouseDown = (event: MouseEvent<SVGSVGElement>) => {
-        const pt = getModelPoint(event);
-
-        if (mode === AppMode.Nesting && activeNest && currentNestSheet && onSelectNestPart) {
-            for (let i = currentNestSheet.placedParts.length - 1; i >= 0; i--) {
-                const pp = currentNestSheet.placedParts[i];
-                const part = parts.find(p => p.id === pp.partId);
-                if (part) {
-                    if (isPointInRectangle(pt, pp.x, pp.y, part.geometry.width, part.geometry.height, pp.rotation)) {
-                        onSelectNestPart(pp.id);
-                        setDraggingNestPartId(pp.id);
-                        lastDragPos.current = pt;
-                        event.stopPropagation();
-                        return;
-                    }
-                }
-            }
-            onSelectNestPart(null);
-        }
-
-        if (event.button === 0 && teachMode && !isDragging) {
-             setSelectionStart(pt);
-             setSelectionCurrent(pt);
-             isSelectingRef.current = true;
-        }
-        
-        panZoomHandlers.onMouseDown(event);
-    };
-
-    const handleMouseMove = (event: MouseEvent<SVGSVGElement>) => {
-        const pt = getModelPoint(event);
-        setMousePos(pt);
-        
-        if (draggingNestPartId && lastDragPos.current && onMoveNestPart && activeNest && currentNestSheet) {
-            const dx = pt.x - lastDragPos.current.x;
-            const dy = pt.y - lastDragPos.current.y;
-            let finalDx = dx;
-            let finalDy = dy;
-            
-             const draggedPart = currentNestSheet.placedParts.find(p => p.id === draggingNestPartId);
-             if (draggedPart) {
-                 const potentialPart = { ...draggedPart, x: draggedPart.x + dx, y: draggedPart.y + dy };
-                 const snapPos = calculateNestingSnap(potentialPart, currentNestSheet.placedParts, parts, 15);
-                 if (snapPos) {
-                     finalDx = snapPos.x - draggedPart.x;
-                     finalDy = snapPos.y - draggedPart.y;
-                 }
-             }
-
-            onMoveNestPart(draggingNestPartId, finalDx, finalDy);
-            lastDragPos.current = pt;
-            event.stopPropagation();
-            return;
-        }
-
-        if (isSelectingRef.current && selectionStart) {
-             setSelectionCurrent(pt);
-             event.stopPropagation();
-        } else {
-             panZoomHandlers.onMouseMove(event);
-        }
-    };
-
-    const handleMouseUp = (event: MouseEvent<SVGSVGElement>) => {
-        if (draggingNestPartId) {
-            setDraggingNestPartId(null);
-            lastDragPos.current = null;
-        }
-
-        if (isSelectingRef.current && selectionStart && selectionCurrent) {
-            if (teachMode && processedGeometry && activePart && onTeachBulkSelect) {
-                const x1 = Math.min(selectionStart.x, selectionCurrent.x);
-                const x2 = Math.max(selectionStart.x, selectionCurrent.x);
-                const y1 = Math.min(selectionStart.y, selectionCurrent.y);
-                const y2 = Math.max(selectionStart.y, selectionCurrent.y);
-                
-                if ((x2 - x1) > 1 || (y2 - y1) > 1) {
-                    const foundSegs: number[] = [];
-                    const foundPunches: string[] = [];
-
-                    processedGeometry.segments.forEach((seg, idx) => {
-                        const cx = (seg.p1.x + seg.p2.x) / 2;
-                        const cy = (seg.p1.y + seg.p2.y) / 2;
-                        if (cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) {
-                            foundSegs.push(idx);
-                        }
-                    });
-
-                    activePart.punches.forEach(p => {
-                        if (p.x >= x1 && p.x <= x2 && p.y >= y1 && p.y <= y2) {
-                            foundPunches.push(p.id);
-                        }
-                    });
-                    
-                    const isAdditive = event.shiftKey || event.ctrlKey;
-                    onTeachBulkSelect(foundSegs, foundPunches, isAdditive);
-                }
-            }
-            setSelectionStart(null);
-            setSelectionCurrent(null);
-            isSelectingRef.current = false;
-        }
-        panZoomHandlers.onMouseUp(event);
-    };
-
-    const handleMouseLeave = (event: MouseEvent<SVGSVGElement>) => {
-        panZoomHandlers.onMouseLeave(event);
-        setMousePos(null);
-        if (isSelectingRef.current) {
-            setSelectionStart(null);
-            setSelectionCurrent(null);
-            isSelectingRef.current = false;
-        }
-        if (draggingNestPartId) {
-            setDraggingNestPartId(null);
-            lastDragPos.current = null;
-        }
-    }
-    
     const renderSelectionBox = () => {
         if (teachMode && selectionStart && selectionCurrent) {
             const x = Math.min(selectionStart.x, selectionCurrent.x);
@@ -279,29 +95,25 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
         <main className="flex-1 bg-gray-800 flex flex-col relative">
             {mode === AppMode.PartEditor && (
                 <div className="flex-none bg-gray-700/50 p-2 flex items-center space-x-4">
-                     <ActionButton icon={<SettingsIcon />} label="Авто-расстановка" onClick={onOpenAutoPunchSettings} disabled={!activePart}/>
+                     <ActionButton icon={<SettingsIcon />} label="Авто-расстановка" onClick={props.onOpenAutoPunchSettings} disabled={!activePart}/>
                 </div>
             )}
             
             <div className="flex-1 bg-grid-pattern p-4 overflow-auto relative">
                 <div className="w-full h-full bg-gray-900 border-2 border-dashed border-gray-600 rounded-lg flex items-center justify-center text-gray-500 overflow-hidden relative">
                     <svg 
-                        ref={svgRef}
-                        width="100%" 
-                        height="100%" 
-                        viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
+                        ref={props.svgRef}
+                        width="100%" height="100%" 
+                        viewBox={`${props.viewBox.x} ${props.viewBox.y} ${props.viewBox.width} ${props.viewBox.height}`}
                         preserveAspectRatio="xMidYMid meet"
-                        {...panZoomHandlers}
-                        onMouseDown={handleMouseDown}
-                        onMouseMove={handleMouseMove}
-                        onMouseUp={handleMouseUp}
-                        onMouseLeave={handleMouseLeave}
-                        onClick={(e) => { e.stopPropagation(); if(!teachMode && onSelectPunch) onSelectPunch(''); }}
-                        className={isDragging ? 'cursor-grabbing' : (manualPunchMode !== ManualPunchMode.Punch && !teachMode && mode === AppMode.PartEditor ? 'cursor-crosshair' : 'cursor-grab')}
+                        onWheel={props.panZoomHandlers.onWheel}
+                        {...interactionHandlers}
+                        onClick={(e) => { e.stopPropagation(); if(!teachMode) onSelectPunch(''); }}
+                        className={props.isDragging ? 'cursor-grabbing' : (manualPunchMode !== ManualPunchMode.Punch && !teachMode && mode === AppMode.PartEditor ? 'cursor-crosshair' : 'cursor-grab')}
                     >
                         <GridDefs />
                         <g transform="scale(1, -1)">
-                            <rect x={viewBox.x - 2000} y={viewBox.y - 2000} width={viewBox.width + 4000} height={viewBox.height + 4000} fill="url(#grid)" pointerEvents="none"/>
+                            <rect x={props.viewBox.x - 2000} y={props.viewBox.y - 2000} width={props.viewBox.width + 4000} height={props.viewBox.height + 4000} fill="url(#grid)" pointerEvents="none"/>
                             
                             {mode === AppMode.PartEditor && activePart && (
                                 <>
@@ -311,19 +123,19 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
                                         tools={tools}
                                         mousePos={mousePos}
                                         manualPunchMode={manualPunchMode}
-                                        punchCreationStep={punchCreationStep}
-                                        punchCreationPoints={punchCreationPoints}
-                                        selectedToolId={selectedToolId}
+                                        punchCreationStep={props.punchCreationStep}
+                                        punchCreationPoints={props.punchCreationPoints}
+                                        selectedToolId={props.selectedToolId}
                                         selectedPunchId={selectedPunchId}
-                                        placementReference={placementReference}
-                                        placementSide={placementSide}
-                                        punchOrientation={punchOrientation}
-                                        punchOffset={punchOffset}
-                                        snapMode={snapMode}
-                                        nibbleSettings={nibbleSettings}
-                                        teachMode={teachMode}
-                                        selectedSegmentIds={selectedSegmentIds}
-                                        selectedTeachPunchIds={selectedTeachPunchIds}
+                                        placementReference={props.placementReference}
+                                        placementSide={props.placementSide}
+                                        punchOrientation={props.punchOrientation}
+                                        punchOffset={props.punchOffset}
+                                        snapMode={props.snapMode}
+                                        nibbleSettings={props.nibbleSettings}
+                                        teachMode={!!teachMode}
+                                        selectedSegmentIds={props.selectedSegmentIds || []}
+                                        selectedTeachPunchIds={props.selectedTeachPunchIds || []}
                                         onSelectPunch={onSelectPunch}
                                     />
                                     {renderSelectionBox()}
@@ -336,7 +148,7 @@ export const CanvasArea: React.FC<CanvasAreaProps> = ({
                                     currentNestSheet={currentNestSheet}
                                     parts={parts}
                                     tools={tools}
-                                    selectedNestPartId={selectedNestPartId}
+                                    selectedNestPartId={props.selectedNestPartId}
                                     optimizedOperations={optimizedOperations}
                                     simulationStep={simulationStep}
                                 />
