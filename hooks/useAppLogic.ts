@@ -19,7 +19,7 @@ import { useConfirmation } from './useConfirmation';
 import { useFileImport } from './useFileImport';
 
 // Services
-import { nestingGenerator } from '../services/nesting';
+import { nestingGeneratorImproved as nestingGenerator } from '../services/nesting-improved';
 import { generateGCode, calculateOptimizedPath } from '../services/gcode';
 import { findClosestSegment } from '../services/geometry';
 import { createTeachCycleFromSelection } from '../services/teachLogic';
@@ -57,29 +57,6 @@ export interface UseAppLogicResult {
     };
 }
 
-/**
- * **useAppLogic**
- * 
- * The central aggregation hook ("The Brain") for the entire CAD/CAM application.
- * It follows the "Container/Presenter" pattern where this hook acts as the Container logic
- * for the root `App` component.
- * 
- * **Responsibilities:**
- * 1.  Aggregates sub-hooks (`persistence`, `editor`, `nesting`, `ui`, `simulation`).
- * 2.  Manages high-level `AppMode` switching.
- * 3.  Defines complex event handlers that cross domain boundaries (e.g., File Upload affecting Editor, Nesting affecting Simulation).
- * 4.  Calculates derived state used by multiple child components.
- * 
- * **Usage:**
- * ```tsx
- * const App = () => {
- *   const logic = useAppLogic();
- *   return <AppUI {...logic} />;
- * }
- * ```
- * 
- * @returns {UseAppLogicResult} An object containing all state selectors and action dispatchers required by the UI.
- */
 export const useAppLogic = (): UseAppLogicResult => {
     const [mode, setMode] = useState<AppMode>(AppMode.PartEditor);
     
@@ -94,8 +71,6 @@ export const useAppLogic = (): UseAppLogicResult => {
     const editor = useEditorState({ 
         tools: persistence.tools, 
         onAddPunches: (data) => {
-            // Note: We use a callback pattern here to ensure we work with the latest state
-            // inside the editor hook's own state management if possible, but here we perform the logic
             editor.setActivePart(currentPart => {
                 if (currentPart) {
                     const newPunches = data.map(p => ({ ...p, id: generateId() }));

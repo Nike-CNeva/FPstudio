@@ -7,22 +7,18 @@ interface RasterMask {
     width: number;
     height: number;
     data: Uint8Array; // 1 = Part Material, 0 = Empty
-    offsetX: number;  // Смещение внутри маски до начала координат (0,0) детали
+    // Offset to convert grid index to physical coordinates relative to placement origin
+    offsetX: number; 
     offsetY: number;
 }
 
 export class ComplexPacker implements INestingPacker {
-    // Глобальная сетка листа: 1D массив, эмулирующий 2D (index = y * width + x)
-    // 0 = Свободно, 1 = Занято
     private grid: Uint8Array;
     private readonly gridW: number;
     private readonly gridH: number;
-    private readonly resolution: number = 1; // 1 пиксель = 1 мм (Максимальная точность)
+    private readonly resolution: number = 1; // 1 pixel = 1 mm for high precision
 
-    // Кэш растеризованных масок для (PartId + Rotation)
-    // Ключ: `${partId}_${rotation}`
     private maskCache: Map<string, RasterMask> = new Map();
-    
     private placedItems: { item: PackerItem; result: PlacedResult }[] = [];
 
     constructor(
@@ -35,6 +31,7 @@ export class ComplexPacker implements INestingPacker {
     ) {
         this.gridW = Math.ceil(sheetW / this.resolution);
         this.gridH = Math.ceil(sheetH / this.resolution);
+        // Initialize grid with 0 (empty)
         this.grid = new Uint8Array(this.gridW * this.gridH);
     }
 
@@ -42,24 +39,20 @@ export class ComplexPacker implements INestingPacker {
         const partDef = this.parts.find(p => p.id === item.partId);
         if (!partDef) return null;
 
-        // Собираем уникальные ротации
         const rotations = Array.from(new Set([
             ...(item.preferredRotation !== undefined ? [item.preferredRotation] : []),
             ...item.allowedRotations
         ]));
 
-        const step = 1; // Шаг 1мм по просьбе пользователя для максимальной плотности
-        
         let bestResult: PlacedResult | null = null;
 
-        // Стратегия: LEFT-MOST PACKING (Приоритет X)
-        // Мы ищем позицию с минимальным X. При равных X берем минимальный Y.
-        // Это позволяет детали "всплывать" или "опускаться" по Y, чтобы найти "карман" левее.
+        // Strategy: Try all rotations, find the one that places the part with minimal X (Left-Most), then minimal Y.
+        // This allows the part to "slide" up and down (Y axis) to find the deepest slot in the X axis.
 
         for (const rot of rotations) {
-            const mask = this.getOrGenerateMask(partDef, rot);
+            // Get mask with spacing included for collision check
+            const mask = this.getOrGenerateMask(partDef, rot, true);
 
-            // Пропуск, если деталь больше листа
             if (mask.width > this.gridW || mask.height > this.gridH) continue;
 
             const limitX = this.gridW - mask.width;
@@ -67,52 +60,51 @@ export class ComplexPacker implements INestingPacker {
 
             let foundPosForRot: { x: number, y: number } | null = null;
 
-            // Внешний цикл по X: Мы хотим заполнять лист слева направо.
-            // Это радикально меняет поведение по сравнению с построчным (Y-first) заполнением.
-            // Теперь алгоритм проверит Y=0, Y=50, Y=100 для X=0, прежде чем перейти к X=1.
+            // Scan X first, then Y. This is the "Left-Bottom" strategy.
+            // We want to pack as far left as possible. Vertical position is secondary.
+            // To support "offset by height", checking every Y for a given X is critical.
+            
+            const step = 1; 
+
             xLoop: for (let x = 0; x <= limitX; x += step) {
-                
-                // Оптимизация отсечения (Pruning):
-                // Если мы уже нашли решение в другой ротации с X=100, 
-                // а сейчас мы проверяем X=101, то нет смысла продолжать эту ротацию.
-                // Мы ищем МИНИМАЛЬНЫЙ X глобально.
-                if (bestResult && (x * this.resolution) > bestResult.x) {
-                    break xLoop; 
+                // Pruning: If we already found a position in another rotation at X_best,
+                // and current x > X_best, we can stop scanning this rotation because it won't beat the best X.
+                if (bestResult && x > (bestResult.x / this.resolution)) {
+                    break xLoop;
                 }
 
-                // Внутренний цикл по Y: Ищем любое свободное место по вертикали для текущего X
+                // Yield to UI thread occasionally if needed (async)
+                if (x % 50 === 0) await new Promise(r => setTimeout(r, 0));
+
                 for (let y = 0; y <= limitY; y += step) {
                     if (!this.checkCollision(x, y, mask)) {
                         foundPosForRot = { x, y };
-                        break xLoop; // Для этой ротации это наилучший X (т.к. цикл X возрастает)
+                        break xLoop; // Found the best X for this rotation (since we scan X increasing)
                     }
                 }
-                
-                // UI responsiveness (реже, т.к. X цикл длиннее, но break срабатывает часто)
-                if (x % 50 === 0) await new Promise(r => setTimeout(r, 0));
             }
 
             if (foundPosForRot) {
+                // We must return the physical extents (without spacing dilation) for the final placement result
+                const physicalExtents = getRotatedExtents(partDef, rot, this.tools);
+                
                 const candidate: PlacedResult = {
                     x: foundPosForRot.x * this.resolution,
                     y: foundPosForRot.y * this.resolution,
                     rotation: rot,
-                    width: mask.width * this.resolution,
-                    height: mask.height * this.resolution,
-                    ox: mask.offsetX,
-                    oy: mask.offsetY
+                    width: physicalExtents.width,
+                    height: physicalExtents.height,
+                    ox: physicalExtents.ox,
+                    oy: physicalExtents.oy
                 };
 
-                // Сравниваем с лучшим результатом других ротаций
                 if (!bestResult) {
                     bestResult = candidate;
                 } else {
-                    // Приоритет 1: Меньше X
+                    // Compare candidates. Priority: Min X, then Min Y.
                     if (candidate.x < bestResult.x) {
                         bestResult = candidate;
-                    } 
-                    // Приоритет 2: При равном X, меньше Y (для компактности снизу)
-                    else if (candidate.x === bestResult.x && candidate.y < bestResult.y) {
+                    } else if (Math.abs(candidate.x - bestResult.x) < 0.1 && candidate.y < bestResult.y) {
                         bestResult = candidate;
                     }
                 }
@@ -126,7 +118,10 @@ export class ComplexPacker implements INestingPacker {
         const partDef = this.parts.find(p => p.id === item.partId);
         if (!partDef) return;
 
-        const mask = this.getOrGenerateMask(partDef, result.rotation);
+        // Write the PART geometry (without spacing) to the grid as "Occupied"
+        // Why? Because spacing is handled by the *search* mask (Part + Spacing).
+        // The grid should represent actual material.
+        const mask = this.getOrGenerateMask(partDef, result.rotation, false);
         
         const gridX = Math.round(result.x / this.resolution);
         const gridY = Math.round(result.y / this.resolution);
@@ -139,32 +134,20 @@ export class ComplexPacker implements INestingPacker {
         return this.placedItems;
     }
 
-    // --- Private Methods ---
+    // --- Private ---
 
     private checkCollision(sx: number, sy: number, mask: RasterMask): boolean {
-        // Быстрая проверка границ массива
+        // Bounds check
         if (sx + mask.width > this.gridW || sy + mask.height > this.gridH) return true;
 
-        // Оптимизация: Проверяем центр и углы сначала, так как там чаще всего бывают коллизии
-        // Центр
-        const cy = Math.floor(mask.height/2);
-        const cx = Math.floor(mask.width/2);
-        if (mask.data[cy * mask.width + cx] && this.grid[(sy + cy) * this.gridW + (sx + cx)]) return true;
-        
-        // Углы (TL, TR, BL, BR) - если там есть материал
-        const mw = mask.width;
-        const mh = mask.height;
-        // TL
-        if (mask.data[0] && this.grid[sy * this.gridW + sx]) return true;
-        
-        // Полный проход
-        for (let my = 0; my < mh; my++) {
-            const sheetRowOffset = (sy + my) * this.gridW + sx;
-            const maskRowOffset = my * mw;
-
-            for (let mx = 0; mx < mw; mx++) {
-                if (mask.data[maskRowOffset + mx] === 1) {
-                    if (this.grid[sheetRowOffset + mx] === 1) {
+        // Mask scan
+        for (let y = 0; y < mask.height; y++) {
+            const gridRowOffset = (sy + y) * this.gridW + sx;
+            const maskRowOffset = y * mask.width;
+            
+            for (let x = 0; x < mask.width; x++) {
+                if (mask.data[maskRowOffset + x] === 1) {
+                    if (this.grid[gridRowOffset + x] === 1) {
                         return true;
                     }
                 }
@@ -174,35 +157,32 @@ export class ComplexPacker implements INestingPacker {
     }
 
     private writeMaskToGrid(sx: number, sy: number, mask: RasterMask) {
-        for (let my = 0; my < mask.height; my++) {
-            const sheetRowOffset = (sy + my) * this.gridW + sx;
-            const maskRowOffset = my * mask.width;
-
-            for (let mx = 0; mx < mask.width; mx++) {
-                if (mask.data[maskRowOffset + mx] === 1) {
-                    this.grid[sheetRowOffset + mx] = 1;
+        for (let y = 0; y < mask.height; y++) {
+            const gridRowOffset = (sy + y) * this.gridW + sx;
+            const maskRowOffset = y * mask.width;
+            for (let x = 0; x < mask.width; x++) {
+                if (mask.data[maskRowOffset + x] === 1) {
+                    this.grid[gridRowOffset + x] = 1;
                 }
             }
         }
     }
 
-    private getOrGenerateMask(part: Part, rotation: number): RasterMask {
-        const key = `${part.id}_${rotation}`;
-        if (this.maskCache.has(key)) {
-            return this.maskCache.get(key)!;
-        }
+    private getOrGenerateMask(part: Part, rotation: number, includeSpacing: boolean): RasterMask {
+        const key = `${part.id}_${rotation}_${includeSpacing ? 'spaced' : 'raw'}`;
+        if (this.maskCache.has(key)) return this.maskCache.get(key)!;
 
         const extents = getRotatedExtents(part, rotation, this.tools);
         
-        // Spacing: увеличиваем маску детали, чтобы обеспечить зазор.
-        // Маска = Деталь + Spacing справа и снизу (условно).
-        const spacing = Math.ceil(Math.max(this.spacingX, this.spacingY) / this.resolution);
-        
+        // If including spacing, expand dimensions
+        const spX = includeSpacing ? Math.ceil(this.spacingX / this.resolution) : 0;
+        const spY = includeSpacing ? Math.ceil(this.spacingY / this.resolution) : 0;
+
         const rawW = Math.ceil(extents.width / this.resolution);
         const rawH = Math.ceil(extents.height / this.resolution);
         
-        const maskW = rawW + spacing; 
-        const maskH = rawH + spacing;
+        const maskW = rawW + spX;
+        const maskH = rawH + spY;
 
         const data = new Uint8Array(maskW * maskH);
 
@@ -210,34 +190,33 @@ export class ComplexPacker implements INestingPacker {
         const cos = Math.cos(rad);
         const sin = Math.sin(rad);
 
+        // Rasterize
         for (let y = 0; y < rawH; y++) {
             for (let x = 0; x < rawW; x++) {
-                const bboxX = x * this.resolution;
-                const bboxY = y * this.resolution;
+                // Center of pixel in part coords
+                const px = x * this.resolution;
+                const py = y * this.resolution;
 
-                // Перевод в систему координат детали
-                const rotX = bboxX - extents.ox;
-                const rotY = bboxY - extents.oy;
+                // Transform to Part Local Coords
+                // extents.ox/oy shifts bbox min to 0,0.
+                const rotX = px - extents.ox;
+                const rotY = py - extents.oy;
 
                 const localX = rotX * cos - rotY * sin;
                 const localY = rotX * sin + rotY * cos;
 
                 if (isPointInsideContour({ x: localX, y: localY }, part.geometry)) {
+                    // Mark this pixel
                     const idx = y * maskW + x;
                     data[idx] = 1;
 
-                    // Dilate (расширение) на величину spacing
-                    if (spacing > 0) {
-                        // Рисуем "тень" безопасности вправо
-                        for(let s=1; s<=spacing; s++) {
-                            if (x + s < maskW) data[y * maskW + (x + s)] = 1;
-                        }
-                        // Рисуем "тень" безопасности вниз
-                        for(let sy=1; sy<=spacing; sy++) {
-                            if (y + sy < maskH) {
-                                const rowOff = (y + sy) * maskW;
-                                for(let sx=0; sx<=spacing; sx++) {
-                                    if (x + sx < maskW) data[rowOff + (x + sx)] = 1;
+                    // If spacing is required, dilate this pixel to the right and bottom
+                    // Effectively treating every pixel as a box of (1+spX)x(1+spY)
+                    if (includeSpacing) {
+                        for (let dy = 0; dy <= spY; dy++) {
+                            for (let dx = 0; dx <= spX; dx++) {
+                                if (x + dx < maskW && y + dy < maskH) {
+                                    data[(y + dy) * maskW + (x + dx)] = 1;
                                 }
                             }
                         }
@@ -249,7 +228,7 @@ export class ComplexPacker implements INestingPacker {
         const mask: RasterMask = {
             width: maskW,
             height: maskH,
-            data: data,
+            data,
             offsetX: extents.ox,
             offsetY: extents.oy
         };

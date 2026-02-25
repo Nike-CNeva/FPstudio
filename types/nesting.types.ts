@@ -38,7 +38,11 @@ export interface NestingSettings {
   utilizationStrategy: SheetUtilizationStrategy;
   useCommonLine: boolean;
   vertexSnapping: boolean; 
-  nestAsRectangle: boolean; 
+  nestAsRectangle: boolean;
+  
+  // New Advanced Settings
+  algorithm?: 'rectangle-basic' | 'complex-basic' | 'complex-fast' | 'bottom-left' | 'hybrid';
+  sortStrategy?: 'area-descending' | 'perimeter-descending' | 'aspect-ratio' | 'hybrid-score' | 'genetic-optimized';
 }
 
 export interface ScheduledPart {
