@@ -221,7 +221,7 @@ export const NestingSidebarPanel: React.FC<NestingSidebarPanelProps> = ({ active
                                         className="w-full bg-gray-900 border border-gray-600 rounded px-2 py-1 text-xs text-gray-200"
                                     >
                                         <option value="hybrid-score">Гибридная (S + Shape)</option>
-                                        <option value="area-descending">По площади (Max -> Min)</option>
+                                        <option value="area-descending">По площади (Max -&gt; Min)</option>
                                         <option value="perimeter-descending">По периметру</option>
                                         <option value="aspect-ratio">По соотношению сторон</option>
                                         <option value="genetic-optimized">Генетическая (Эксперимент)</option>

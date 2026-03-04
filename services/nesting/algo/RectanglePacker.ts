@@ -31,8 +31,18 @@ export class RectanglePacker implements INestingPacker {
         const rotations = [0];
         if (item.allowedRotations.includes(90) || item.allowedRotations.includes(270)) rotations.push(90);
 
+        // Counter to yield periodically
+        let lastYieldTime = Date.now();
+
         for (const rect of this.freeRects) {
             for (const rot of rotations) {
+                // Yield periodically to keep UI responsive
+                const now = Date.now();
+                if (now - lastYieldTime > 50) {
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                    lastYieldTime = Date.now();
+                }
+
                 const isRot = rot === 90;
                 const curW = isRot ? item.height : item.width;
                 const curH = isRot ? item.width : item.height;

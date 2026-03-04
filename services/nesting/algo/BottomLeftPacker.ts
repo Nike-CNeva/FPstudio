@@ -43,7 +43,15 @@ export class BottomLeftPacker implements INestingPacker {
             // Генерируем кандидатские позиции на основе уже размещенных деталей
             const candidatePositions = this.generateCandidatePositions(extents.width, extents.height);
             
+            let lastYieldTime = Date.now();
             for (const { x, y } of candidatePositions) {
+                // Yield periodically
+                const now = Date.now();
+                if (now - lastYieldTime > 50) {
+                    await new Promise(r => setTimeout(r, 0));
+                    lastYieldTime = Date.now();
+                }
+
                 if (x + extents.width > this.sheetW || y + extents.height > this.sheetH) continue;
 
                 const candidateOrigin: Point = { x: x + extents.ox, y: y + extents.oy };

@@ -45,6 +45,7 @@ export class ComplexPacker implements INestingPacker {
         ]));
 
         let bestResult: PlacedResult | null = null;
+        let lastYieldTime = Date.now();
 
         // Strategy: Try all rotations, find the one that places the part with minimal X (Left-Most), then minimal Y.
         // This allows the part to "slide" up and down (Y axis) to find the deepest slot in the X axis.
@@ -74,7 +75,11 @@ export class ComplexPacker implements INestingPacker {
                 }
 
                 // Yield to UI thread occasionally if needed (async)
-                if (x % 50 === 0) await new Promise(r => setTimeout(r, 0));
+                const now = Date.now();
+                if (now - lastYieldTime > 50) { // Yield every 50ms
+                    await new Promise(r => setTimeout(r, 0));
+                    lastYieldTime = Date.now();
+                }
 
                 for (let y = 0; y <= limitY; y += step) {
                     if (!this.checkCollision(x, y, mask)) {

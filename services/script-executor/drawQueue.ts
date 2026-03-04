@@ -79,8 +79,22 @@ export class DrawQueue {
                 entities.push({ type: 'LINE', start: { x: penX, y: penY }, end: { x: nx, y: ny } });
             } else if (op.type === 'arc') {
                 const r = Math.sqrt((penX - normX(op.centerX))**2 + (penY - normY(op.centerY))**2);
-                const largeArc = 0; // Требует доработки для скриптов
+                
+                // Calculate start and end angles
+                const startAngle = Math.atan2(penY - normY(op.centerY), penX - normX(op.centerX));
+                const endAngle = Math.atan2(normY(op.endY) - normY(op.centerY), normX(op.endX) - normX(op.centerX));
+                
+                let angleDiff = endAngle - startAngle;
+                
+                if (op.clockwise) {
+                    if (angleDiff > 0) angleDiff -= 2 * Math.PI;
+                } else {
+                    if (angleDiff < 0) angleDiff += 2 * Math.PI;
+                }
+                
+                const largeArc = Math.abs(angleDiff) > Math.PI ? 1 : 0;
                 const sweep = op.clockwise ? 1 : 0;
+                
                 path += `A ${r.toFixed(3)} ${r.toFixed(3)} 0 ${largeArc} ${sweep} ${nx.toFixed(3)} ${ny.toFixed(3)} `;
                 entities.push({ 
                     type: 'ARC', 

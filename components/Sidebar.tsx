@@ -1,6 +1,6 @@
 
 import React, { ChangeEvent } from 'react';
-import { AppMode, NestLayout, Part, Tool, ManualPunchMode, SnapMode, NibbleSettings, DestructSettings, PlacedTool, TeachCycle, ScheduledPart } from '../../types';
+import { AppMode, NestLayout, Part, Tool, ManualPunchMode, SnapMode, NibbleSettings, DestructSettings, PlacedTool, TeachCycle, ScheduledPart } from '../types';
 import { PartEditorSidebar } from './sidebar/PartEditorSidebar';
 import { NestingSidebarPanel } from './sidebar/NestingSidebarPanel';
 import { TrashIcon, PlayIcon } from './Icons';

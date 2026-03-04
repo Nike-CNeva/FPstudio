@@ -314,7 +314,6 @@ export const initialTurretLayouts: TurretLayout[] = [
 
 export const initialParts: Part[] = [];
 
-// FIX: Added missing initialScripts export to resolve import error in App.tsx
 export const initialScripts: ParametricScript[] = [];
 
 const defaultSheetId = generateId();

@@ -8,7 +8,6 @@ import { useAppLogic } from './hooks/useAppLogic';
 import { AppUI } from './AppUI';
 import { AppMode, ScheduledPart, Part, Tool } from './types';
 import { generateId, getPartBaseName, generatePartNameFromProfile } from './utils/helpers';
-// FIX: Added missing import for generateParametricScript
 import { generateParametricScript } from './services/scriptGenerator';
 
 const App: React.FC = () => {
@@ -141,7 +140,6 @@ const App: React.FC = () => {
             panZoom={{ ...app.panZoom, handlers: app.panZoom.panZoomHandlers }}
             manualPunchState={{ step: editor.manualPunch.punchCreationStep, points: editor.manualPunch.punchCreationPoints }}
             setActiveSheetIndex={nesting.setActiveSheetIndex}
-            // FIX: Removed duplicate manualPunchMode prop (previously here)
             setManualPunchMode={editor.setManualPunchMode}
             setSelectedToolId={editor.setSelectedToolId}
             setSelectedPunchId={editor.setSelectedPunchId}

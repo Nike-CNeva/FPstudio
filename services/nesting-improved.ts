@@ -143,13 +143,61 @@ export async function* nestingGeneratorImproved(
             }))
         };
 
-        completedSheets.push(resultSheet);
-        yield { 
-            sheets: [...completedSheets], 
-            progress: (totalPackedCount / totalToPack) * 100, 
-            status: `Лист #${completedSheets.length} готов (${resultSheet.usedArea.toFixed(1)}% заполнение)` 
-        };
+        // Проверка на идентичность с предыдущим листом
+        const lastSheet = completedSheets.length > 0 ? completedSheets[completedSheets.length - 1] : null;
+        
+        if (lastSheet && areSheetsIdentical(lastSheet, resultSheet)) {
+            // Если листы идентичны, увеличиваем счетчик предыдущего
+            const updatedLastSheet = { ...lastSheet, quantity: lastSheet.quantity + 1 };
+            completedSheets[completedSheets.length - 1] = updatedLastSheet;
+            
+            yield { 
+                sheets: [...completedSheets], 
+                progress: (totalPackedCount / totalToPack) * 100, 
+                status: `Лист #${completedSheets.length} (x${updatedLastSheet.quantity}) готов` 
+            };
+        } else {
+            // Иначе добавляем новый лист
+            // Если были сгруппированные листы до этого, нужно обновить имя текущего?
+            // Обычно Sheet 1, Sheet 2... Если Sheet 1 имеет quantity 5, следующий будет Sheet 2 или Sheet 6?
+            // Обычно в интерфейсе просто список уникальных раскладок. Пусть будет Sheet N по порядку уникальных.
+            resultSheet.sheetName = `Sheet ${completedSheets.length + 1}`;
+            
+            completedSheets.push(resultSheet);
+            yield { 
+                sheets: [...completedSheets], 
+                progress: (totalPackedCount / totalToPack) * 100, 
+                status: `Лист #${completedSheets.length} готов (${resultSheet.usedArea.toFixed(1)}% заполнение)` 
+            };
+        }
     }
+}
+
+/**
+ * Проверка идентичности двух листов раскроя
+ */
+function areSheetsIdentical(sheetA: NestResultSheet, sheetB: NestResultSheet): boolean {
+    // 1. Проверка исходного листа
+    if (sheetA.stockSheetId !== sheetB.stockSheetId) return false;
+    
+    // 2. Проверка количества деталей
+    if (sheetA.placedParts.length !== sheetB.placedParts.length) return false;
+    
+    // 3. Проверка расположения деталей
+    // Предполагаем, что упаковщик детерминирован и порядок деталей совпадает
+    for (let i = 0; i < sheetA.placedParts.length; i++) {
+        const pA = sheetA.placedParts[i];
+        const pB = sheetB.placedParts[i];
+        
+        if (pA.partId !== pB.partId) return false;
+        
+        // Сравниваем координаты и поворот с небольшим допуском
+        if (Math.abs(pA.x - pB.x) > 0.001) return false;
+        if (Math.abs(pA.y - pB.y) > 0.001) return false;
+        if (Math.abs(pA.rotation - pB.rotation) > 0.1) return false;
+    }
+    
+    return true;
 }
 
 /**

@@ -100,14 +100,17 @@ export class ComplexPackerFast implements INestingPacker {
         }
 
         // Грубый проход
+        let lastYieldTime = Date.now();
         for (const rot of rotationCandidates) {
             const extents = getRotatedExtents(partDef, rot, this.tools);
             if (extents.width > this.sheetW || extents.height > this.sheetH) continue;
 
             for (let x = 0; x <= this.sheetW - extents.width; x += coarseStep) {
-                // Асинхронная пауза каждые 50 итераций для отзывчивости UI
-                if (x % (coarseStep * 50) === 0) {
+                // Асинхронная пауза каждые 50мс для отзывчивости UI
+                const now = Date.now();
+                if (now - lastYieldTime > 50) {
                     await new Promise(resolve => setTimeout(resolve, 0));
+                    lastYieldTime = Date.now();
                 }
 
                 for (let y = 0; y <= this.sheetH - extents.height; y += coarseStep) {
