@@ -22,7 +22,7 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = (props) => {
     const turret = useTurretLogic(props);
     const { 
         currentStations, selectedStationId, isMtView, selectedMtSlotId, 
-        toolsOnTurret, availableTools, setIsMtView, setSelectedMtSlotId
+        toolsOnTurret, availableTools, incompatibleToolsOnSelectedStation, setIsMtView, setSelectedMtSlotId
     } = turret;
 
     const selectedStation = currentStations.find(s => s.id === selectedStationId);
@@ -77,6 +77,7 @@ export const TurretSetupView: React.FC<TurretSetupViewProps> = (props) => {
                     isMtView={isMtView}
                     selectedMtSlotId={selectedMtSlotId}
                     activeTool={activeTool}
+                    incompatibleTools={incompatibleToolsOnSelectedStation}
                     onUpdateStation={turret.updateStationConfig}
                     onUpdateRotation={turret.updateToolRotation}
                     onUnmount={turret.handleUnmountTool}
