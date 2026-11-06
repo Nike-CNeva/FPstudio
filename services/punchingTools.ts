@@ -40,8 +40,10 @@ const selectLineTools: ToolSelectorStrategy = (len, _, tools, tolerance) => {
         const sA = scoreToolShape(a);
         const sB = scoreToolShape(b);
         if (sA !== sB) return sB - sA;
-        const lenA = Math.max(a.width, a.height);
-        const lenB = Math.max(b.width, b.height);
+        // generateNibblePunches aligns the tool's X axis with the segment,
+        // so width (not the bounding-box maximum) is the effective hit length.
+        const lenA = a.width;
+        const lenB = b.width;
         if (len > 0) {
             const fitsA = lenA <= (len + tolerance);
             const fitsB = lenB <= (len + tolerance);
