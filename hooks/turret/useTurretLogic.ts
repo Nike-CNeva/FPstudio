@@ -7,6 +7,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Tool, TurretLayout, StationConfig } from '../../types';
 import { generateId } from '../../utils/helpers';
+import { isToolCompatibleWithStation } from '../../services/turretCompatibility';
 
 interface UseTurretLogicProps {
     tools: Tool[];
@@ -82,33 +83,38 @@ export const useTurretLogic = ({ tools, setTools, layouts, setLayouts }: UseTurr
         setSelectedStationId(stationId);
     }, [currentStations]);
 
-    const checkCompatibility = useCallback((tool: Tool, station: StationConfig): boolean => {
-        if (station.type === 'MT') return tool.stationType === 'MT';
-        return tool.toolSize === station.type;
+    const checkCompatibility = useCallback((tool: Tool, station: StationConfig, mtIndex?: number | null): boolean => {
+        return isToolCompatibleWithStation(tool, station, mtIndex);
     }, []);
 
     const handleMountTool = useCallback((tool: Tool, mtIndex?: number) => {
-        if (!selectedStationId) return;
-        const station = currentStations.find(s => s.id === selectedStationId);
-        if (!station || !checkCompatibility(tool, station)) return;
+        if (selectedStationId === null) return;
 
+        const station = currentStations.find(s => s.id === selectedStationId);
+        const sourceTool = tools.find(t => t.id === tool.id);
+        if (!station || !sourceTool || sourceTool.stationNumber) return;
+        if (isMtView && (mtIndex === undefined || !Number.isInteger(mtIndex) || mtIndex < 1 || mtIndex > 24)) return;
+        if (!isMtView && station.type === 'MT') return;
+        if (!checkCompatibility(sourceTool, station, isMtView ? mtIndex : null)) return;
+
+        const targetSlot = isMtView ? mtIndex : 0;
         const updatedTools = tools.map(t => {
-            if (t.stationNumber === selectedStationId) {
-                if (isMtView) {
-                    if (t.mtIndex === mtIndex) return { ...t, stationNumber: 0, mtIndex: 0 };
-                } else {
-                    return { ...t, stationNumber: 0, mtIndex: 0 };
-                }
+            if (t.id === sourceTool.id) {
+                return { ...t, stationNumber: selectedStationId, mtIndex: targetSlot };
             }
-            if (t.id === tool.id) {
-                return { ...t, stationNumber: selectedStationId, mtIndex: mtIndex || 0 };
+
+            const occupiesTarget = t.stationNumber === selectedStationId
+                && (!isMtView || t.mtIndex === targetSlot);
+            if (occupiesTarget) {
+                return { ...t, stationNumber: 0, mtIndex: 0 };
             }
+
             return t;
         });
+
         setTools(updatedTools);
         setLayouts(prev => prev.map(l => l.id === activeLayoutId ? { ...l, toolsSnapshot: updatedTools } : l));
     }, [selectedStationId, currentStations, checkCompatibility, tools, isMtView, activeLayoutId, setTools, setLayouts]);
-
     const handleUnmountTool = useCallback((toolId: string) => {
         const updatedTools = tools.map(t => t.id === toolId ? { ...t, stationNumber: 0, mtIndex: 0 } : t);
         setTools(updatedTools);
