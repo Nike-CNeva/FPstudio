@@ -5,6 +5,7 @@
 import React from 'react';
 import { Tool, StationConfig } from '../../types';
 import { ToolPreview } from '../common/ToolDisplay';
+import { isToolCompatibleWithStation } from '../../services/turretCompatibility';
 
 interface TurretLibraryPanelProps {
     tools: Tool[];
@@ -25,13 +26,9 @@ export const TurretLibraryPanel: React.FC<TurretLibraryPanelProps> = (props) => 
             <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar">
                  {tools.map(tool => {
                      const displaySize = (tool.stationType === 'MT' || tool.name.startsWith('MT')) ? 'MT' : tool.toolSize;
-                     let isCompatible = false;
-                     if (selectedStation) {
-                         if (isMtView) isCompatible = tool.stationType === 'MT'; 
-                         else if (selectedStation.type === 'MT') isCompatible = false; 
-                         else isCompatible = tool.toolSize === selectedStation.type;
-                     }
-                     
+                     const isCompatible = selectedStation
+                         ? isToolCompatibleWithStation(tool, selectedStation, isMtView ? selectedMtSlotId : null)
+                         : false;
                      const canMount = isCompatible && ((!isMtView && selectedStation) || (isMtView && selectedMtSlotId));
 
                      return (
