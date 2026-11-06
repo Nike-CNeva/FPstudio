@@ -33,6 +33,13 @@ export const useTurretLogic = ({ tools, setTools, layouts, setLayouts }: UseTurr
 
     const toolsOnTurret = useMemo(() => tools.filter(t => t.stationNumber !== 0 && t.stationNumber !== undefined), [tools]);
     const availableTools = useMemo(() => tools.filter(t => !t.stationNumber), [tools]);
+    const incompatibleToolsOnSelectedStation = useMemo(() => {
+        if (selectedStationId === null) return [];
+        const station = currentStations.find(s => s.id === selectedStationId);
+        if (!station) return [];
+        return tools.filter(t => t.stationNumber === selectedStationId
+            && !isToolCompatibleWithStation(t, station, station.type === 'MT' ? t.mtIndex : null));
+    }, [tools, currentStations, selectedStationId]);
 
     const loadLayout = useCallback((layoutId: string) => {
         const layout = layouts.find(l => l.id === layoutId);
@@ -67,11 +74,11 @@ export const useTurretLogic = ({ tools, setTools, layouts, setLayouts }: UseTurr
     }, [layouts, activeLayoutId, loadLayout, setLayouts]);
 
     const updateStationConfig = useCallback((id: number, updates: Partial<StationConfig>) => {
-        setCurrentStations(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
-        setLayouts(prev => prev.map(l => l.id === activeLayoutId ? { 
-            ...l, 
-            stations: currentStations.map(s => s.id === id ? { ...s, ...updates } : s) 
-        } : l));
+        const updatedStations = currentStations.map(s => s.id === id ? { ...s, ...updates } : s);
+        setCurrentStations(updatedStations);
+        setLayouts(prev => prev.map(l => l.id === activeLayoutId
+            ? { ...l, stations: updatedStations }
+            : l));
     }, [activeLayoutId, currentStations, setLayouts]);
 
     const handleStationClick = useCallback((stationId: number) => {
@@ -130,7 +137,7 @@ export const useTurretLogic = ({ tools, setTools, layouts, setLayouts }: UseTurr
     return {
         activeLayoutId, currentStations, selectedStationId, isMtView, setIsMtView,
         selectedMtSlotId, setSelectedMtSlotId, newLayoutName, setNewLayoutName,
-        toolsOnTurret, availableTools,
+        toolsOnTurret, availableTools, incompatibleToolsOnSelectedStation,
         loadLayout, saveLayout, deleteLayout, updateStationConfig,
         handleStationClick, handleMountTool, handleUnmountTool, updateToolRotation
     };
