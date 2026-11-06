@@ -12,6 +12,7 @@ interface StationControlPanelProps {
     isMtView: boolean;
     selectedMtSlotId: number | null;
     activeTool: Tool | undefined;
+    incompatibleTools: Tool[];
     onUpdateStation: (id: number, u: Partial<StationConfig>) => void;
     onUpdateRotation: (id: string, r: number) => void;
     onUnmount: (id: string) => void;
@@ -19,7 +20,7 @@ interface StationControlPanelProps {
 }
 
 export const StationControlPanel: React.FC<StationControlPanelProps> = (props) => {
-    const { selectedStation, isMtView, selectedMtSlotId, activeTool } = props;
+    const { selectedStation, isMtView, selectedMtSlotId, activeTool, incompatibleTools } = props;
 
     if (!selectedStation) return (
         <div className="p-4 border-b border-gray-700 bg-gray-800">
@@ -33,6 +34,19 @@ export const StationControlPanel: React.FC<StationControlPanelProps> = (props) =
                 {isMtView ? `MT Станция ${selectedStation.id} - Слот ${selectedMtSlotId || '?'}` : `Станция ${selectedStation.id}`}
             </h3>
             
+            {incompatibleTools.length > 0 && (
+                <div role="alert" className="mb-3 rounded border border-amber-500 bg-amber-900/30 p-3">
+                    <div className="text-xs font-bold text-amber-300">ВНИМАНИЕ: несовместимая наладка</div>
+                    <p className="mt-1 text-xs text-amber-100">
+                        После изменения типа станции или Auto Index следующие инструменты требуют проверки:
+                    </p>
+                    <ul className="mt-1 list-disc pl-4 text-xs text-amber-100">
+                        {incompatibleTools.map(tool => <li key={tool.id}>{tool.name}</li>)}
+                    </ul>
+                    <p className="mt-2 text-[10px] text-amber-200">Инструменты сохранены. Снимите их или восстановите совместимые параметры станции.</p>
+                </div>
+            )}
+
             <div className="space-y-3">
                 {!isMtView && (
                     <div className="flex space-x-4">
