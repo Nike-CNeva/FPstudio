@@ -293,27 +293,41 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
         } else if (line.startsWith('NIBBLE')) {
             if (i + 4 < lines.length) {
                 const stepLine = lines[i+1].trim();
-                const step = parseFloat(stepLine) || 10;
-                
+                const parsedStep = parseFloat(stepLine);
+                // Keep the legacy 10 mm fallback for missing/zero steps, but never
+                // allow a negative or non-finite step to produce invalid coordinates.
+                const step = Number.isFinite(parsedStep) && parsedStep > 0 ? parsedStep : 10;
+
                 const startParts = lines[i+2].split(/\s+/);
                 const endParts = lines[i+3].split(/\s+/);
-                
+
                 if (startParts.length >= 2 && endParts.length >= 2 && currentTool) {
                     const x1 = parseFloat(startParts[0]);
                     const y1 = parseFloat(startParts[1]);
                     const x2 = parseFloat(endParts[0]);
                     const y2 = parseFloat(endParts[1]);
-                    
-                    const dist = Math.sqrt((x2-x1)**2 + (y2-y1)**2);
-                    const count = Math.ceil(dist / step);
-                    const dx = (x2 - x1) / count;
-                    const dy = (y2 - y1) / count;
-                    
+
+                    if (![x1, y1, x2, y2].every(Number.isFinite)) {
+                        i += 4;
+                        continue;
+                    }
+
+                    const dist = Math.hypot(x2 - x1, y2 - y1);
+                    if (!Number.isFinite(dist)) {
+                        i += 4;
+                        continue;
+                    }
+
+                    // A zero-length NIBBLE is a single strike, not a division by zero.
+                    const count = dist <= 1e-9 ? 0 : Math.max(1, Math.ceil(dist / step));
+                    const dx = count > 0 ? (x2 - x1) / count : 0;
+                    const dy = count > 0 ? (y2 - y1) / count : 0;
+
                     const lineId = `cp_nibble_${generateId()}`;
-                    
-                    for(let k=0; k<=count; k++) {
-                        const rx = x1 + dx*k;
-                        const ry = y1 + dy*k;
+
+                    for (let k = 0; k <= count; k++) {
+                        const rx = x1 + dx * k;
+                        const ry = y1 + dy * k;
                         // Normalize Nibble Coords
                         const n = normalize(rx, ry);
                         punches.push({
