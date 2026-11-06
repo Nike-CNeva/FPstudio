@@ -24,8 +24,16 @@ export const processArcSegment = (
     const ang1 = Math.atan2(seg.p1.y - center.y, seg.p1.x - center.x);
     let ang2 = Math.atan2(seg.p2.y - center.y, seg.p2.x - center.x);
     let diff = ang2 - ang1;
-    if (diff < -Math.PI) diff += 2 * Math.PI;
-    if (diff > Math.PI) diff -= 2 * Math.PI;
+    if (seg.originalEntity?.type === 'ARC') {
+        // DXF ARC entities are counter-clockwise. Preserve their actual sweep:
+        // reducing to the shortest angle silently changes arcs larger than 180°.
+        while (diff < 0) diff += 2 * Math.PI;
+        while (diff >= 2 * Math.PI) diff -= 2 * Math.PI;
+    } else {
+        // Circle segments are split into quarter-arcs by the geometry processor.
+        if (diff < -Math.PI) diff += 2 * Math.PI;
+        if (diff > Math.PI) diff -= 2 * Math.PI;
+    }
     
     const isProbeInMaterial = isPointInsideContour(denormalizePoint({ x: center.x + (r + 0.1) * Math.cos(ang1 + diff / 2), y: center.y + (r + 0.1) * Math.sin(ang1 + diff / 2) }, geometry.bbox), geometry);
     
@@ -44,6 +52,8 @@ export const processArcSegment = (
     if (punchR <= 0) return; 
 
     let aDiff = Math.abs(diff);
+    if (!Number.isFinite(aDiff) || aDiff <= 1e-9) return;
+
     let aAng1 = ang1;
     const isClosed = Math.abs(diff) > (2 * Math.PI - 0.01);
     
@@ -56,7 +66,8 @@ export const processArcSegment = (
     }
 
     const step = calculateScallopStep(tool.width/2, settings.scallopHeight) / punchR;
-    const steps = Math.ceil(aDiff / step);
+    if (!Number.isFinite(step) || step <= 0) return;
+    const steps = Math.max(1, Math.ceil(aDiff / step));
     const rStep = (diff > 0 ? aDiff : -aDiff) / steps;
 
     for(let i=0; i <= (isClosed ? steps - 1 : steps); i++) {
