@@ -132,7 +132,10 @@ export const generateDestructPunches = (
 };
 
 const isAxisAlignedRectangleContour = (points: Point[], segments: Segment[]): boolean => {
-    if (points.length !== 4 || segments.length !== 4 || segments.some(segment => segment.type !== 'line')) return false;
+    if (points.length !== 4 || segments.length !== 4 || segments.some(segment =>
+        segment.type !== 'line' ||
+        (Math.abs(segment.p2.x - segment.p1.x) > 0.001 && Math.abs(segment.p2.y - segment.p1.y) > 0.001)
+    )) return false;
 
     const minX = Math.min(...points.map(point => point.x));
     const maxX = Math.max(...points.map(point => point.x));
@@ -163,9 +166,13 @@ const isOblongContour = (segments: Segment[], width: number, height: number): bo
         segment.sweepAngle !== undefined && Math.abs(segment.sweepAngle - 180) <= 0.1
     );
     const lineLengths = lines.map(segment => Math.hypot(segment.p2.x - segment.p1.x, segment.p2.y - segment.p1.y));
+    const centerDistance = arcs[0].center && arcs[1].center
+        ? Math.hypot(arcs[1].center.x - arcs[0].center.x, arcs[1].center.y - arcs[0].center.y)
+        : Infinity;
 
     return arcRadiiMatch && arcSweepsMatch &&
-        lineLengths.every(length => Math.abs(length - expectedStraightLength) <= TOLERANCE.MATCH);
+        lineLengths.every(length => Math.abs(length - expectedStraightLength) <= TOLERANCE.MATCH) &&
+        Math.abs(centerDistance - expectedStraightLength) <= TOLERANCE.MATCH;
 };
 
 const isCircleContour = (segments: Segment[]): boolean => {
