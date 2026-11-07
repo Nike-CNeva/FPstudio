@@ -1,7 +1,7 @@
 
 import { Point, Tool, NibbleSettings, PlacedTool, ToolShape, PartGeometry, AutoPunchSettings, DestructSettings } from '../types';
 import { generateId } from '../utils/helpers';
-import { degreesToRadians } from './punchingUtils';
+import { degreesToRadians, TOLERANCE } from './punchingUtils';
 import { getPreferredTools } from './punchingTools';
 import { findClosedLoops, Segment } from './geometry';
 import { matchSpecialToolContour } from './specialToolMatching';
