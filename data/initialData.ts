@@ -250,7 +250,7 @@ export const initialTools: Tool[] = [
         name: 'TR_IKLYA',
         shape: ToolShape.Special,
         width: 15,
-        height: 15,
+        height: 15 * Math.sqrt(3) / 2,
         customPath: createTrianglePath(15),
         customGeometry: createTriangleGeometry(15),
         punchType: PunchType.General,
