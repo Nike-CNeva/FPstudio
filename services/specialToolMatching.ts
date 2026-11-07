@@ -106,8 +106,6 @@ const matchOrderedContours = (
             y: targetFirst.to.y - targetFirst.from.y
         };
         const radians = Math.atan2(targetVector.y, targetVector.x) - Math.atan2(toolVector.y, toolVector.x);
-        const cos = Math.cos(radians);
-        const sin = Math.sin(radians);
         const rotatedStart = rotatePoint(toolFirst.from, radians);
         const translation = {
             x: targetFirst.from.x - rotatedStart.x,
@@ -175,16 +173,7 @@ const matchOrderedContours = (
     return best;
 };
 
-/**
- * Finds an exact rigid (rotation + translation, no scaling or mirroring) match
- * between a Special tool's stored DXF contour and one closed part contour.
- */
-export const matchSpecialToolContour = (
-    tool: Tool,
-    targetSegments: Segment[],
-    targetSegmentIndices: number[],
-    tolerance: number = TOLERANCE.MATCH
-): SpecialToolMatch | null => {
+const getToolContour = (tool: Tool): OrderedContourSegment[] | null => {
     if (!tool.customGeometry?.length || !Number.isFinite(tool.width) || !Number.isFinite(tool.height)) {
         return null;
     }
@@ -206,7 +195,23 @@ export const matchSpecialToolContour = (
         return null;
     }
 
-    const toolContour = orderClosedContour(toolGeometry.segments, toolLoops[0].segmentIndices);
+    return orderClosedContour(toolGeometry.segments, toolLoops[0].segmentIndices);
+};
+
+export const hasUsableSpecialToolGeometry = (tool: Tool): boolean =>
+    getToolContour(tool) !== null;
+
+/**
+ * Finds an exact rigid (rotation + translation, no scaling or mirroring) match
+ * between a Special tool's stored DXF contour and one closed part contour.
+ */
+export const matchSpecialToolContour = (
+    tool: Tool,
+    targetSegments: Segment[],
+    targetSegmentIndices: number[],
+    tolerance: number = TOLERANCE.MATCH
+): SpecialToolMatch | null => {
+    const toolContour = getToolContour(tool);
     const targetContour = orderClosedContour(targetSegments, targetSegmentIndices);
     if (!toolContour || !targetContour) return null;
 
