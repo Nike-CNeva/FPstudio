@@ -68,6 +68,7 @@ const reverseContour = (contour: OrderedContourSegment[]): OrderedContourSegment
     }));
 
 const arcSweep = (segment: Segment): number | null => {
+    if (Number.isFinite(segment.sweepAngle)) return segment.sweepAngle as number;
     const entity = segment.originalEntity;
     if (entity?.type === 'CIRCLE') return 90;
     if (entity?.type !== 'ARC') return null;
