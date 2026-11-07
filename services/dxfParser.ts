@@ -11,6 +11,7 @@ export const parseDxf = (dxfContent: string): DxfEntity[] => {
   const entities: DxfEntity[] = [];
   let currentEntity: DxfEntity | null = null;
   let lastLwPolylineX: number | null = null; // State for LWPOLYLINE vertices
+  let lastLwPolylineVertexIndex: number | null = null;
 
   const pushCurrentEntity = () => {
     if (currentEntity) {
@@ -18,6 +19,7 @@ export const parseDxf = (dxfContent: string): DxfEntity[] => {
       currentEntity = null;
     }
     lastLwPolylineX = null; // Reset state for new entity
+    lastLwPolylineVertexIndex = null;
   };
 
   // Correctly iterate by pairs of code and value
@@ -68,9 +70,15 @@ export const parseDxf = (dxfContent: string): DxfEntity[] => {
             case 'LWPOLYLINE':
                  if (code === 10) { // X coordinate
                     lastLwPolylineX = floatVal;
+                    lastLwPolylineVertexIndex = null;
                  } else if (code === 20 && lastLwPolylineX !== null) { // Y coordinate
                     currentEntity.vertices.push({ x: lastLwPolylineX, y: floatVal });
+                    lastLwPolylineVertexIndex = currentEntity.vertices.length - 1;
                     lastLwPolylineX = null;
+                 } else if (code === 42 && lastLwPolylineVertexIndex !== null) {
+                    // Bulge belongs to the segment starting at the preceding vertex.
+                    currentEntity.bulges = currentEntity.bulges || [];
+                    currentEntity.bulges[lastLwPolylineVertexIndex] = floatVal;
                  } else if (code === 70) {
                     // Bit code 1 = closed
                     currentEntity.closed = (parseInt(value, 10) & 1) === 1;
@@ -105,6 +113,29 @@ export const parseDxf = (dxfContent: string): DxfEntity[] => {
 
 const degreesToRadians = (degrees: number) => degrees * (Math.PI / 180);
 
+const getBulgeArc = (start: Point, end: Point, bulge: number) => {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const chord = Math.hypot(dx, dy);
+    if (!Number.isFinite(bulge) || Math.abs(bulge) < 1e-9 || chord < 1e-9) return null;
+
+    const sweepRadians = 4 * Math.atan(bulge);
+    const radius = chord * (1 + bulge * bulge) / (4 * Math.abs(bulge));
+    const midpoint = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+    const centerOffset = chord * (1 - bulge * bulge) / (4 * bulge);
+    const center = {
+        x: midpoint.x - (dy / chord) * centerOffset,
+        y: midpoint.y + (dx / chord) * centerOffset
+    };
+
+    return {
+        center,
+        radius,
+        startAngle: Math.atan2(start.y - center.y, start.x - center.x) * 180 / Math.PI,
+        sweepDegrees: sweepRadians * 180 / Math.PI
+    };
+};
+
 /**
  * Converts an array of parsed DXF entities into a single SVG path string.
  * Coordinates are normalized to (0,0) at Bottom-Left (Y-Up Cartesian).
@@ -133,9 +164,31 @@ export const dxfEntitiesToSvg = (entities: DxfEntity[]): {
 
     entities.forEach(entity => {
         switch(entity.type) {
-            case 'LWPOLYLINE':
+            case 'LWPOLYLINE': {
                 entity.vertices.forEach(v => updateBounds(v.x, v.y));
+                const edgeCount = entity.closed ? entity.vertices.length : Math.max(0, entity.vertices.length - 1);
+                for (let i = 0; i < edgeCount; i++) {
+                    const start = entity.vertices[i];
+                    const end = entity.vertices[(i + 1) % entity.vertices.length];
+                    const arc = getBulgeArc(start, end, entity.bulges?.[i] || 0);
+                    if (!arc) continue;
+
+                    for (const cardinal of [0, 90, 180, 270]) {
+                        const normalize = (angle: number) => ((angle % 360) + 360) % 360;
+                        const progress = arc.sweepDegrees >= 0
+                            ? normalize(cardinal - arc.startAngle)
+                            : normalize(arc.startAngle - cardinal);
+                        if (progress <= Math.abs(arc.sweepDegrees) + 1e-8) {
+                            const rad = degreesToRadians(cardinal);
+                            updateBounds(
+                                arc.center.x + arc.radius * Math.cos(rad),
+                                arc.center.y + arc.radius * Math.sin(rad)
+                            );
+                        }
+                    }
+                }
                 break;
+            }
             case 'LINE':
                 updateBounds(entity.start.x, entity.start.y);
                 updateBounds(entity.end.x, entity.end.y);
@@ -206,12 +259,29 @@ export const dxfEntitiesToSvg = (entities: DxfEntity[]): {
 
     normalizedEntities.forEach(entity => {
         switch(entity.type) {
-            case 'LWPOLYLINE':
-                const pathData = entity.vertices
-                    .map((v, i) => `${i === 0 ? 'M' : 'L'} ${v.x.toFixed(3)} ${v.y.toFixed(3)}`)
-                    .join(' ');
+            case 'LWPOLYLINE': {
+                if (entity.vertices.length === 0) break;
+                let pathData = `M ${entity.vertices[0].x.toFixed(3)} ${entity.vertices[0].y.toFixed(3)}`;
+                const edgeCount = entity.closed ? entity.vertices.length : Math.max(0, entity.vertices.length - 1);
+
+                for (let i = 0; i < edgeCount; i++) {
+                    const start = entity.vertices[i];
+                    const end = entity.vertices[(i + 1) % entity.vertices.length];
+                    const bulge = entity.bulges?.[i] || 0;
+                    const arc = getBulgeArc(start, end, bulge);
+
+                    if (!arc) {
+                        pathData += ` L ${end.x.toFixed(3)} ${end.y.toFixed(3)}`;
+                    } else {
+                        const largeArcFlag = Math.abs(arc.sweepDegrees) > 180 ? 1 : 0;
+                        const sweepFlag = arc.sweepDegrees >= 0 ? 1 : 0;
+                        pathData += ` A ${arc.radius.toFixed(3)} ${arc.radius.toFixed(3)} 0 ${largeArcFlag} ${sweepFlag} ${end.x.toFixed(3)} ${end.y.toFixed(3)}`;
+                    }
+                }
+
                 pathDataParts.push(pathData + (entity.closed ? ' Z' : ''));
                 break;
+            }
             case 'LINE':
                 pathDataParts.push(`M ${entity.start.x.toFixed(3)} ${entity.start.y.toFixed(3)} L ${entity.end.x.toFixed(3)} ${entity.end.y.toFixed(3)}`);
                 break;
