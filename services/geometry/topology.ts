@@ -4,11 +4,29 @@ import { distanceSq, polygonArea, polygonCenter, normalize } from './math';
 import { segmentIntersectsGeometry } from './intersections';
 
 export type Segment = { 
-    p1: Point; p2: Point; type: 'line' | 'arc'; radius?: number; center?: Point; originalEntity?: any; 
+    p1: Point; p2: Point; type: 'line' | 'arc'; radius?: number; center?: Point; sweepAngle?: number; originalEntity?: any; 
 };
 
 export type ProcessedGeometry = { 
     vertices: Point[], segments: Segment[], bbox: PartGeometry['bbox'], holeCenters: { point: Point, rotation?: number }[],
+};
+
+const getBulgeArc = (start: Point, end: Point, bulge: number) => {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const chord = Math.hypot(dx, dy);
+    if (!Number.isFinite(bulge) || Math.abs(bulge) < 1e-9 || chord < 1e-9) return null;
+
+    const sweepRadians = 4 * Math.atan(bulge);
+    const radius = chord * (1 + bulge * bulge) / (4 * Math.abs(bulge));
+    const midpoint = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+    const centerOffset = chord * (1 - bulge * bulge) / (4 * bulge);
+    const center = {
+        x: midpoint.x - (dy / chord) * centerOffset,
+        y: midpoint.y + (dx / chord) * centerOffset
+    };
+
+    return { center, radius, sweepAngle: Math.abs(sweepRadians * 180 / Math.PI) };
 };
 
 export const findClosedLoops = (segments: Segment[]): { vertices: Point[], segmentIndices: number[] }[] => {
@@ -77,11 +95,27 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
             case 'LWPOLYLINE': {
                 if (entity.vertices.length < 2) break;
                 const points = entity.vertices.map(v => normalize(v, bbox));
-                for(let i = 0; i < points.length - 1; i++) {
-                    vertices.push(points[i]); segments.push({ p1: points[i], p2: points[i+1], type: 'line', originalEntity: entity });
+                const edgeCount = entity.closed ? points.length : points.length - 1;
+
+                for (let i = 0; i < edgeCount; i++) {
+                    const p1 = points[i];
+                    const p2 = points[(i + 1) % points.length];
+                    const arc = getBulgeArc(p1, p2, entity.bulges?.[i] || 0);
+                    vertices.push(p1);
+                    if (arc) {
+                        segments.push({
+                            p1, p2, type: 'arc',
+                            radius: arc.radius,
+                            center: arc.center,
+                            sweepAngle: arc.sweepAngle,
+                            originalEntity: entity
+                        });
+                    } else {
+                        segments.push({ p1, p2, type: 'line', originalEntity: entity });
+                    }
                 }
-                vertices.push(points[points.length-1]);
-                if (entity.closed) segments.push({ p1: points[points.length-1], p2: points[0], type: 'line', originalEntity: entity });
+
+                if (!entity.closed) vertices.push(points[points.length - 1]);
                 break;
             }
             case 'ARC': {
@@ -89,14 +123,14 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
                 const p1 = normalize({ x: entity.center.x + entity.radius * Math.cos(startRad), y: entity.center.y + entity.radius * Math.sin(startRad) }, bbox);
                 const p2 = normalize({ x: entity.center.x + entity.radius * Math.cos(endRad), y: entity.center.y + entity.radius * Math.sin(endRad) }, bbox);
                 const center = normalize(entity.center, bbox);
-                vertices.push(p1, p2); segments.push({ p1, p2, type: 'arc', radius: entity.radius, center, originalEntity: entity });
+                vertices.push(p1, p2); segments.push({ p1, p2, type: 'arc', radius: entity.radius, center, sweepAngle: (() => { let sweep = entity.endAngle - entity.startAngle; if (sweep < 0) sweep += 360; return sweep; })(), originalEntity: entity });
                 break;
             }
             case 'CIRCLE': {
                 const r = entity.radius; const c = entity.center; const center = normalize(c, bbox);
                 const points = [{x: c.x + r, y: c.y}, {x: c.x, y: c.y + r}, {x: c.x - r, y: c.y}, {x: c.x, y: c.y - r}].map(p => normalize(p, bbox));
                 vertices.push(...points);
-                for (let i = 0; i < points.length; i++) segments.push({p1: points[i], p2: points[(i+1) % 4], type: 'arc', radius: r, center, originalEntity: entity });
+                for (let i = 0; i < points.length; i++) segments.push({p1: points[i], p2: points[(i+1) % 4], type: 'arc', radius: r, center, sweepAngle: 90, originalEntity: entity });
                 break;
             }
         }
