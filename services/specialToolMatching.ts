@@ -253,10 +253,10 @@ export const matchSpecialToolContour = (
     if (!toolContour || !targetContour) return null;
 
     const forwardMatch = matchOrderedContours(toolContour, targetContour, tool, tolerance);
-    const reverseMatch = forwardMatch
-        ? null
-        : matchOrderedContours(toolContour, reverseContour(targetContour), tool, tolerance);
-    const match = forwardMatch || reverseMatch;
+    const reverseMatch = matchOrderedContours(toolContour, reverseContour(targetContour), tool, tolerance);
+    const match = [forwardMatch, reverseMatch]
+        .filter((candidate): candidate is SpecialToolMatch => candidate !== null)
+        .sort((a, b) => a.error - b.error)[0] || null;
 
     // A fixed station must not receive an arbitrary C-axis angle.
     // Until key-slot orientation semantics are verified, only accept its stored DXF orientation.
