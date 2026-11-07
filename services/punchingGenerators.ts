@@ -3,7 +3,7 @@ import { Point, Tool, NibbleSettings, PlacedTool, ToolShape, PartGeometry, AutoP
 import { generateId } from '../utils/helpers';
 import { degreesToRadians } from './punchingUtils';
 import { getPreferredTools } from './punchingTools';
-import { findClosedLoops } from './geometry';
+import { findClosedLoops, Segment } from './geometry';
 import { matchSpecialToolContour } from './specialToolMatching';
 
 export const generateNibblePunches = (
@@ -131,6 +131,57 @@ export const generateDestructPunches = (
     return punches;
 };
 
+const isAxisAlignedRectangleContour = (points: Point[], segments: Segment[]): boolean => {
+    if (points.length !== 4 || segments.length !== 4 || segments.some(segment => segment.type !== 'line')) return false;
+
+    const minX = Math.min(...points.map(point => point.x));
+    const maxX = Math.max(...points.map(point => point.x));
+    const minY = Math.min(...points.map(point => point.y));
+    const maxY = Math.max(...points.map(point => point.y));
+    const actualCorners = new Set(points.map(point => `${point.x.toFixed(3)},${point.y.toFixed(3)}`));
+    const expectedCorners = [
+        `${minX.toFixed(3)},${minY.toFixed(3)}`,
+        `${minX.toFixed(3)},${maxY.toFixed(3)}`,
+        `${maxX.toFixed(3)},${minY.toFixed(3)}`,
+        `${maxX.toFixed(3)},${maxY.toFixed(3)}`
+    ];
+
+    return expectedCorners.every(corner => actualCorners.has(corner));
+};
+
+const isOblongContour = (segments: Segment[], width: number, height: number): boolean => {
+    const arcs = segments.filter(segment => segment.type === 'arc');
+    const lines = segments.filter(segment => segment.type === 'line');
+    if (arcs.length !== 2 || lines.length !== 2) return false;
+
+    const expectedRadius = Math.min(width, height) / 2;
+    const expectedStraightLength = Math.max(0, Math.max(width, height) - Math.min(width, height));
+    const arcRadiiMatch = arcs.every(segment =>
+        segment.radius !== undefined && Math.abs(segment.radius - expectedRadius) <= TOLERANCE.MATCH
+    );
+    const arcSweepsMatch = arcs.every(segment =>
+        segment.sweepAngle !== undefined && Math.abs(segment.sweepAngle - 180) <= 0.1
+    );
+    const lineLengths = lines.map(segment => Math.hypot(segment.p2.x - segment.p1.x, segment.p2.y - segment.p1.y));
+
+    return arcRadiiMatch && arcSweepsMatch &&
+        lineLengths.every(length => Math.abs(length - expectedStraightLength) <= TOLERANCE.MATCH);
+};
+
+const isCircleContour = (segments: Segment[]): boolean => {
+    if (segments.length < 3 || segments.some(segment => segment.type !== 'arc')) return false;
+    const first = segments[0];
+    if (!first.center || first.radius === undefined) return false;
+
+    const totalSweep = segments.reduce((sum, segment) => sum + (segment.sweepAngle || 0), 0);
+    return segments.every(segment =>
+        !!segment.center &&
+        segment.radius !== undefined &&
+        Math.abs(segment.radius - first.radius!) <= TOLERANCE.MATCH &&
+        Math.hypot(segment.center.x - first.center!.x, segment.center.y - first.center!.y) <= TOLERANCE.MATCH
+    ) && Math.abs(totalSweep - 360) <= 0.1;
+};
+
 /**
  * Pre-scans geometry for recognizable shapes (Rectangles, Oblongs, Circles) 
  * that match available tools exactly.
@@ -171,7 +222,14 @@ export const detectAndPunchShapes = (
             const h = maxY - minY;
             const center = normalize({ x: (minX + maxX)/2, y: (minY + maxY)/2 });
 
-            const isAxisAligned = v.every(p => (Math.abs(p.x - minX) < 0.01 || Math.abs(p.x - maxX) < 0.01) && (Math.abs(p.y - minY) < 0.01 || Math.abs(p.y - maxY) < 0.01));
+            const actualCorners = new Set(v.map(p => `${p.x.toFixed(3)},${p.y.toFixed(3)}`));
+            const expectedCorners = [
+                `${minX.toFixed(3)},${minY.toFixed(3)}`,
+                `${minX.toFixed(3)},${maxY.toFixed(3)}`,
+                `${maxX.toFixed(3)},${minY.toFixed(3)}`,
+                `${maxX.toFixed(3)},${maxY.toFixed(3)}`
+            ];
+            const isAxisAligned = v.length === 4 && expectedCorners.every(corner => actualCorners.has(corner));
 
             if (isAxisAligned) {
                 const rectMatches = getPreferredTools('rect', w, h, tools, settings.toleranceRectLength);
@@ -185,15 +243,6 @@ export const detectAndPunchShapes = (
                 }
             }
 
-            const oblongMatches = getPreferredTools('oblong', w, h, tools, settings.toleranceRound); 
-            if (oblongMatches.length > 0) {
-                const tool = oblongMatches[0];
-                let rot = 0;
-                if (Math.abs(tool.width - h) < 0.1 && Math.abs(tool.height - w) < 0.1) rot = 90;
-                punches.push({ toolId: tool.id, x: center.x, y: center.y, rotation: rot });
-                processed.segments.forEach((seg: any, idx: number) => { if (seg.originalEntity === entity) coveredIndices.add(idx); });
-                return;
-            }
         }
     });
 
@@ -239,6 +288,8 @@ export const detectLoopTools = (
 
         // Special tools are matched against the complete ordered contour.
         // Bounding-box equality is deliberately insufficient for non-standard shapes.
+        const loopSegments = loop.segmentIndices.map(idx => processed.segments[idx]) as Segment[];
+
         const specialMatch = tools
             .filter(tool => tool.shape === ToolShape.Special)
             .map(tool => ({
@@ -259,7 +310,42 @@ export const detectLoopTools = (
             return;
         }
 
-        const oblongMatches = getPreferredTools('oblong', w, h, tools, settings.toleranceRound);
+        // Standard shapes also require contour evidence; a matching bounding box alone is unsafe.
+        if (isOblongContour(loopSegments, w, h)) {
+            const oblongMatches = getPreferredTools('oblong', w, h, tools, settings.toleranceRound);
+            if (oblongMatches.length > 0) {
+                const tool = oblongMatches[0];
+                const rotation = Math.abs(tool.width - h) <= TOLERANCE.MATCH &&
+                    Math.abs(tool.height - w) <= TOLERANCE.MATCH ? 90 : 0;
+                punches.push({ toolId: tool.id, x: cx, y: cy, rotation });
+                loop.segmentIndices.forEach(idx => coveredIndices.add(idx));
+                return;
+            }
+        }
+
+        if (isAxisAlignedRectangleContour(loop.vertices, loopSegments)) {
+            const rectMatches = getPreferredTools('rect', w, h, tools, settings.toleranceRectLength);
+            if (rectMatches.length > 0) {
+                const tool = rectMatches[0];
+                const rotation = Math.abs(tool.width - h) <= TOLERANCE.MATCH &&
+                    Math.abs(tool.height - w) <= TOLERANCE.MATCH ? 90 : 0;
+                punches.push({ toolId: tool.id, x: cx, y: cy, rotation });
+                loop.segmentIndices.forEach(idx => coveredIndices.add(idx));
+                return;
+            }
+        }
+
+        if (Math.abs(w - h) < TOLERANCE.MATCH && isCircleContour(loopSegments)) {
+            const circleMatches = getPreferredTools('circle', w, 0, tools, settings.toleranceRound);
+            if (circleMatches.length > 0) {
+                const tool = circleMatches[0];
+                if (Math.abs(tool.width - w) <= settings.toleranceRound) {
+                    punches.push({ toolId: tool.id, x: cx, y: cy, rotation: 0 });
+                    loop.segmentIndices.forEach(idx => coveredIndices.add(idx));
+                    return;
+                }
+            }
+        }
         if (oblongMatches.length > 0) {
             const tool = oblongMatches[0];
             let rot = 0;
