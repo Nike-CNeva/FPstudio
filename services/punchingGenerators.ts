@@ -229,7 +229,11 @@ export const detectAndPunchShapes = (
                 `${maxX.toFixed(3)},${minY.toFixed(3)}`,
                 `${maxX.toFixed(3)},${maxY.toFixed(3)}`
             ];
-            const isAxisAligned = v.length === 4 && expectedCorners.every(corner => actualCorners.has(corner));
+            const entitySegments = processed.segments.filter((segment: any) => segment.originalEntity === entity);
+            const isAxisAligned = v.length === 4 &&
+                expectedCorners.every(corner => actualCorners.has(corner)) &&
+                entitySegments.length === 4 &&
+                entitySegments.every((segment: any) => segment.type === 'line');
 
             if (isAxisAligned) {
                 const rectMatches = getPreferredTools('rect', w, h, tools, settings.toleranceRectLength);
