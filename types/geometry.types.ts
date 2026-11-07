@@ -14,6 +14,7 @@ export interface DxfLwPolyline {
   type: 'LWPOLYLINE';
   vertices: Point[];
   closed: boolean;
+  bulges?: number[]; // DXF bulge per outgoing vertex-to-vertex segment
 }
 
 export interface DxfCircle {
