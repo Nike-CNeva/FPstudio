@@ -23,7 +23,9 @@ const orderClosedContour = (segments: Segment[], indices: number[]): OrderedCont
     const adjacency = new Map<string, number[]>();
     indices.forEach(index => {
         const segment = segments[index];
-        if (!segment) return;
+        if (!segment || Math.hypot(segment.p2.x - segment.p1.x, segment.p2.y - segment.p1.y) < 0.001) {
+            return;
+        }
         [pointKey(segment.p1), pointKey(segment.p2)].forEach(key => {
             if (!adjacency.has(key)) adjacency.set(key, []);
             adjacency.get(key)!.push(index);
@@ -174,29 +176,63 @@ const matchOrderedContours = (
     return best;
 };
 
+const isFinitePoint = (point: any): boolean =>
+    !!point && Number.isFinite(point.x) && Number.isFinite(point.y);
+
+const isValidToolEntity = (entity: any): boolean => {
+    if (!entity || typeof entity !== 'object') return false;
+    switch (entity.type) {
+        case 'LINE':
+            return isFinitePoint(entity.start) && isFinitePoint(entity.end);
+        case 'LWPOLYLINE':
+            return Array.isArray(entity.vertices) &&
+                entity.vertices.length >= 2 &&
+                entity.vertices.every(isFinitePoint) &&
+                typeof entity.closed === 'boolean' &&
+                (entity.bulges === undefined ||
+                    (Array.isArray(entity.bulges) && entity.bulges.every((bulge: unknown) =>
+                        bulge === null || bulge === undefined || (typeof bulge === 'number' && Number.isFinite(bulge))
+                    )));
+        case 'ARC':
+            return isFinitePoint(entity.center) &&
+                Number.isFinite(entity.radius) && entity.radius > 0 &&
+                Number.isFinite(entity.startAngle) && Number.isFinite(entity.endAngle);
+        case 'CIRCLE':
+            return isFinitePoint(entity.center) && Number.isFinite(entity.radius) && entity.radius > 0;
+        default:
+            return false;
+    }
+};
+
 const getToolContour = (tool: Tool): OrderedContourSegment[] | null => {
-    if (!tool.customGeometry?.length || !Number.isFinite(tool.width) || !Number.isFinite(tool.height)) {
+    if (!tool.customGeometry?.length ||
+        !Number.isFinite(tool.width) || !Number.isFinite(tool.height) ||
+        !tool.customGeometry.every(isValidToolEntity)) {
         return null;
     }
 
-    const toolGeometry = getGeometryFromEntities({
-        geometry: {
-            entities: tool.customGeometry,
-            width: tool.width,
-            height: tool.height,
-            bbox: { minX: 0, minY: 0, maxX: tool.width, maxY: tool.height }
+    try {
+        const toolGeometry = getGeometryFromEntities({
+            geometry: {
+                entities: tool.customGeometry,
+                width: tool.width,
+                height: tool.height,
+                bbox: { minX: 0, minY: 0, maxX: tool.width, maxY: tool.height }
+            }
+        } as Part);
+
+        if (!toolGeometry) return null;
+
+        const toolLoops = findClosedLoops(toolGeometry.segments);
+        // Reject open, disconnected, or multi-contour tool definitions rather than guessing.
+        if (toolLoops.length !== 1 || toolLoops[0].segmentIndices.length !== toolGeometry.segments.length) {
+            return null;
         }
-    } as Part);
 
-    if (!toolGeometry) return null;
-
-    const toolLoops = findClosedLoops(toolGeometry.segments);
-    // Reject open, disconnected, or multi-contour tool definitions rather than guessing.
-    if (toolLoops.length !== 1 || toolLoops[0].segmentIndices.length !== toolGeometry.segments.length) {
+        return orderClosedContour(toolGeometry.segments, toolLoops[0].segmentIndices);
+    } catch {
         return null;
     }
-
-    return orderClosedContour(toolGeometry.segments, toolLoops[0].segmentIndices);
 };
 
 export const hasUsableSpecialToolGeometry = (tool: Tool): boolean =>
