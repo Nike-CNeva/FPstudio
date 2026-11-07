@@ -166,11 +166,20 @@ const isOblongContour = (segments: Segment[], width: number, height: number): bo
         segment.sweepAngle !== undefined && Math.abs(segment.sweepAngle - 180) <= 0.1
     );
     const lineLengths = lines.map(segment => Math.hypot(segment.p2.x - segment.p1.x, segment.p2.y - segment.p1.y));
-    const centerDistance = arcs[0].center && arcs[1].center
-        ? Math.hypot(arcs[1].center.x - arcs[0].center.x, arcs[1].center.y - arcs[0].center.y)
-        : Infinity;
+    const centerVector = arcs[0].center && arcs[1].center
+        ? { x: arcs[1].center.x - arcs[0].center.x, y: arcs[1].center.y - arcs[0].center.y }
+        : null;
+    const centerDistance = centerVector ? Math.hypot(centerVector.x, centerVector.y) : Infinity;
+    const linesParallelToCenters = !!centerVector && lines.every(line => {
+        const dx = line.p2.x - line.p1.x;
+        const dy = line.p2.y - line.p1.y;
+        const length = Math.hypot(dx, dy);
+        if (length < 0.001 || centerDistance < 0.001) return false;
+        return Math.abs(dx * centerVector.y - dy * centerVector.x) / (length * centerDistance) <= 0.01;
+    });
 
-    return arcRadiiMatch && arcSweepsMatch &&
+    return expectedStraightLength > TOLERANCE.MATCH &&
+        arcRadiiMatch && arcSweepsMatch && linesParallelToCenters &&
         lineLengths.every(length => Math.abs(length - expectedStraightLength) <= TOLERANCE.MATCH) &&
         Math.abs(centerDistance - expectedStraightLength) <= TOLERANCE.MATCH;
 };
