@@ -4,6 +4,7 @@ import { generateId } from '../utils/helpers';
 import { degreesToRadians } from './punchingUtils';
 import { getPreferredTools } from './punchingTools';
 import { findClosedLoops } from './geometry';
+import { matchSpecialToolContour } from './specialToolMatching';
 
 export const generateNibblePunches = (
     p1: Point,
@@ -235,6 +236,28 @@ export const detectLoopTools = (
         const h = maxY - minY;
         const cx = (minX + maxX) / 2;
         const cy = (minY + maxY) / 2;
+
+        // Special tools are matched against the complete ordered contour.
+        // Bounding-box equality is deliberately insufficient for non-standard shapes.
+        const specialMatch = tools
+            .filter(tool => tool.shape === ToolShape.Special)
+            .map(tool => ({
+                tool,
+                match: matchSpecialToolContour(tool, processed.segments, loop.segmentIndices)
+            }))
+            .filter(candidate => candidate.match !== null)
+            .sort((a, b) => a.match!.error - b.match!.error)[0];
+
+        if (specialMatch?.match) {
+            punches.push({
+                toolId: specialMatch.tool.id,
+                x: specialMatch.match.x,
+                y: specialMatch.match.y,
+                rotation: specialMatch.match.rotation
+            });
+            loop.segmentIndices.forEach(idx => coveredIndices.add(idx));
+            return;
+        }
 
         const oblongMatches = getPreferredTools('oblong', w, h, tools, settings.toleranceRound);
         if (oblongMatches.length > 0) {
