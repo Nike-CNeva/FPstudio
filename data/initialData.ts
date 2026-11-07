@@ -38,8 +38,17 @@ const createDefaultTool = (overrides: Partial<Tool>): Tool => ({
 // Helper for triangle path (equilateral)
 const createTrianglePath = (s: number) => {
     const h = s * Math.sqrt(3) / 2;
-    // Centered at 0,0
-    return `M 0 ${-h/2} L ${s/2} ${h/2} L ${-s/2} ${h/2} Z`;
+    // Normalized to the tool bounding box (0..s, 0..h).
+    return `M ${s/2} 0 L ${s} ${h} L 0 ${h} Z`;
+};
+
+const createTriangleGeometry = (s: number) => {
+    const h = s * Math.sqrt(3) / 2;
+    return [{
+        type: 'LWPOLYLINE' as const,
+        vertices: [{ x: s / 2, y: 0 }, { x: s, y: h }, { x: 0, y: h }],
+        closed: true
+    }];
 };
 
 export const initialTools: Tool[] = [
@@ -243,6 +252,7 @@ export const initialTools: Tool[] = [
         width: 15,
         height: 15,
         customPath: createTrianglePath(15),
+        customGeometry: createTriangleGeometry(15),
         punchType: PunchType.General,
         stationNumber: 15,
         stationType: 'D',
