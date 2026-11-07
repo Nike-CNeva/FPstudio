@@ -240,7 +240,10 @@ export const detectAndPunchShapes = (
             const isAxisAligned = v.length === 4 &&
                 expectedCorners.every(corner => actualCorners.has(corner)) &&
                 entitySegments.length === 4 &&
-                entitySegments.every((segment: any) => segment.type === 'line');
+                entitySegments.every((segment: any) =>
+                    segment.type === 'line' &&
+                    (Math.abs(segment.p2.x - segment.p1.x) < 0.001 || Math.abs(segment.p2.y - segment.p1.y) < 0.001)
+                );
 
             if (isAxisAligned) {
                 const rectMatches = getPreferredTools('rect', w, h, tools, settings.toleranceRectLength);
