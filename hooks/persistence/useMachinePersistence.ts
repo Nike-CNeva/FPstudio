@@ -2,12 +2,24 @@
 /**
  * ОТВЕТСТВЕННОСТЬ: Настройки физического станка, раскладки револьвера и параметров G-кода.
  */
+import { useEffect } from 'react';
 import { useLocalStorage } from '../useLocalStorage';
 import { TurretLayout, MachineSettings, OptimizerSettings } from '../../types';
-import { initialTurretLayouts, defaultMachineSettings, defaultOptimizerSettings } from '../../data/initialData';
+import { initialTurretLayouts, defaultMachineSettings, defaultOptimizerSettings, migrateLegacyTriangleTool } from '../../data/initialData';
 
 export const useMachinePersistence = () => {
-    const [turretLayouts, setTurretLayouts] = useLocalStorage<TurretLayout[]>('fp_turret_layouts', initialTurretLayouts);
+    const [storedTurretLayouts, setTurretLayouts] = useLocalStorage<TurretLayout[]>('fp_turret_layouts', initialTurretLayouts);
+    const turretLayouts = storedTurretLayouts.map(layout => ({
+        ...layout,
+        toolsSnapshot: layout.toolsSnapshot.map(migrateLegacyTriangleTool)
+    }));
+
+    useEffect(() => {
+        const hasMigration = turretLayouts.some((layout, index) =>
+            layout.toolsSnapshot.some((tool, toolIndex) => tool !== storedTurretLayouts[index]?.toolsSnapshot[toolIndex])
+        );
+        if (hasMigration) setTurretLayouts(turretLayouts);
+    }, [storedTurretLayouts]);
     const [machineSettings, setMachineSettings] = useLocalStorage<MachineSettings>('fp_machine_settings', defaultMachineSettings);
     const [optimizerSettings, setOptimizerSettings] = useLocalStorage<OptimizerSettings>('fp_optimizer_settings', defaultOptimizerSettings);
 
