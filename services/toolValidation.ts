@@ -1,4 +1,5 @@
 import { Tool, ToolShape } from '../types';
+import { hasUsableSpecialToolGeometry } from './specialToolMatching';
 
 export interface ToolValidationResult {
     valid: boolean;
@@ -64,8 +65,13 @@ export const validateTool = (tool: Tool): ToolValidationResult => {
         });
     }
 
-    if (tool.shape === ToolShape.Special && (typeof tool.customPath !== 'string' || !tool.customPath.trim())) {
-        errors.push('Для Special-инструмента необходимо загрузить DXF-контур.');
+    if (tool.shape === ToolShape.Special) {
+        if (typeof tool.customPath !== 'string' || !tool.customPath.trim()) {
+            errors.push('Для Special-инструмента необходимо загрузить DXF-контур.');
+        }
+        if (!hasUsableSpecialToolGeometry(tool)) {
+            errors.push('DXF Special-инструмента должен содержать один замкнутый контур из поддерживаемых линий и дуг. Повторно загрузите корректный DXF.');
+        }
     }
 
     if (!Array.isArray(tool.keyAngles) || tool.keyAngles.some(angle => !isFiniteNumber(angle))) {
