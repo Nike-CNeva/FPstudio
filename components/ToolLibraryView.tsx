@@ -53,6 +53,7 @@ const ToolForm: React.FC<{
 
     useEffect(() => {
         setFormData(JSON.parse(JSON.stringify(editingTool))); // Deep copy
+        setValidationErrors([]);
     }, [editingTool]);
     
     useEffect(() => {
