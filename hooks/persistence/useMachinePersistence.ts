@@ -2,17 +2,17 @@
 /**
  * ОТВЕТСТВЕННОСТЬ: Настройки физического станка, раскладки револьвера и параметров G-кода.
  */
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useLocalStorage } from '../useLocalStorage';
 import { TurretLayout, MachineSettings, OptimizerSettings } from '../../types';
 import { initialTurretLayouts, defaultMachineSettings, defaultOptimizerSettings, migrateLegacyTriangleTool } from '../../data/initialData';
 
 export const useMachinePersistence = () => {
     const [storedTurretLayouts, setTurretLayouts] = useLocalStorage<TurretLayout[]>('fp_turret_layouts', initialTurretLayouts);
-    const turretLayouts = storedTurretLayouts.map(layout => ({
+    const turretLayouts = useMemo(() => storedTurretLayouts.map(layout => ({
         ...layout,
         toolsSnapshot: layout.toolsSnapshot.map(migrateLegacyTriangleTool)
-    }));
+    })), [storedTurretLayouts]);
 
     useEffect(() => {
         const hasMigration = turretLayouts.some((layout, index) =>
