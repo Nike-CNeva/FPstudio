@@ -4,6 +4,7 @@
  * Ответственность: Описание физических параметров пуансонов, матриц и конфигурации револьверной головки.
  */
 import { ToolShape, PunchType } from './enums.types';
+import { DxfEntity } from './geometry.types';
 
 export interface Tool {
   id: string;
@@ -16,7 +17,8 @@ export interface Tool {
   cornerRadius: number;
   toolSize: string; // Станция: 'A', 'B', 'C', 'D'
   description: string;
-  customPath?: string; // Для DXF-инструментов Special
+  customPath?: string; // SVG preview path for Special tools
+  customGeometry?: DxfEntity[]; // Normalized source geometry used for exact contour matching
   
   punchType: PunchType;
 
