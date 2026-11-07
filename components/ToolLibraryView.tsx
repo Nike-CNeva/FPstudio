@@ -120,6 +120,7 @@ const ToolForm: React.FC<{
                         customGeometry: normalizedEntities,
                         shape: ToolShape.Special // Ensure special type is set
                     }));
+                    setValidationErrors([]);
                 } else {
                     alert("Не удалось найти геометрию в DXF файле.");
                 }
@@ -164,7 +165,11 @@ const ToolForm: React.FC<{
                                     <span>Загрузить DXF (.dxf)</span>
                                 </button>
                                 <input type="file" ref={fileInputRef} onChange={handleDxfUpload} accept=".dxf" className="hidden" />
-                                {formData.customPath && <span className="text-green-400 text-xs mt-2">Контур загружен!</span>}
+                                {formData.customGeometry?.length
+                                    ? <span className="text-green-400 text-xs mt-2">Геометрия DXF загружена</span>
+                                    : formData.customPath
+                                        ? <span className="text-amber-400 text-xs mt-2">Повторно загрузите DXF для авторасстановки</span>
+                                        : null}
                             </div>
                         ) : null}
 
