@@ -1,4 +1,4 @@
-import { Tool, ToolShape } from '../types';
+import { Tool, ToolShape, PunchType } from '../types';
 import { hasUsableSpecialToolGeometry } from './specialToolMatching';
 
 export interface ToolValidationResult {
@@ -17,6 +17,52 @@ export const validateTool = (tool: Tool): ToolValidationResult => {
 
     if (typeof tool.name !== 'string' || !tool.name.trim()) {
         errors.push('Укажите название инструмента.');
+    }
+
+    if (!Object.values(ToolShape).includes(tool.shape)) {
+        errors.push('Выбрана неизвестная форма инструмента.');
+    }
+
+    if (!Object.values(PunchType).includes(tool.punchType)) {
+        errors.push('Выбран неизвестный тип применения инструмента.');
+    }
+
+    if (tool.stationType !== undefined && !['A', 'B', 'C', 'D', 'MT'].includes(tool.stationType)) {
+        errors.push('Указан неизвестный тип станции.');
+    }
+
+    if (typeof tool.isAutoIndex !== 'boolean') {
+        errors.push('Параметр Auto Index должен быть включён или выключен.');
+    }
+
+    const numericParameters: [string, unknown][] = [
+        ['Высота съёмника', tool.stripperHeight],
+        ['Глубина пробивки', tool.punchDepth],
+        ['Скорость пуансона', tool.ramSpeed],
+        ['Ускорение', tool.acceleration],
+        ['Приоритет нибблинга', tool.nibblingPriority],
+        ['Приоритет пробивки', tool.punchPriority],
+        ['Защитная зона Y', tool.yProtectionArea],
+        ['Ширина зоны', tool.zoneWidth],
+        ['Угол по умолчанию', tool.defaultRotation]
+    ];
+
+    numericParameters.forEach(([label, value]) => {
+        if (value !== undefined && !isFiniteNumber(value)) {
+            errors.push(`${label}: значение должно быть конечным числом.`);
+        }
+    });
+
+    if (isFiniteNumber(tool.yProtectionArea) && tool.yProtectionArea < 0) {
+        errors.push('Защитная зона Y не может быть отрицательной.');
+    }
+
+    if (isFiniteNumber(tool.zoneWidth) && tool.zoneWidth < 0) {
+        errors.push('Ширина зоны не может быть отрицательной.');
+    }
+
+    if (typeof tool.operatingMode !== 'string' || !tool.operatingMode.trim()) {
+        errors.push('Не указан режим работы инструмента.');
     }
 
     if (!isFiniteNumber(tool.width) || tool.width <= 0) {
