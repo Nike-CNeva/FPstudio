@@ -4,7 +4,8 @@ import { Tool, ToolShape, PunchType } from '../types';
 import { PlusIcon, SaveIcon, TrashIcon, FolderIcon } from './Icons';
 import { FilterButton } from './common/Button';
 import { ModalInputField } from './common/InputField';
-import { getPunchTypeName } from '../utils/helpers';
+import { generateId, getPunchTypeName } from '../utils/helpers';
+import { validateTool } from '../services/toolValidation';
 import { ToolPreview } from './common/ToolDisplay';
 import { parseDxf, dxfEntitiesToSvg } from '../services/dxfParser';
 
@@ -47,6 +48,7 @@ const ToolForm: React.FC<{
     onCancel: () => void,
 }> = ({ editingTool, onSave, onDelete, onCancel }) => {
     const [formData, setFormData] = useState<Tool | Omit<Tool, 'id'>>(editingTool);
+    const [validationErrors, setValidationErrors] = useState<string[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
@@ -61,6 +63,7 @@ const ToolForm: React.FC<{
 
     const handleFormChange = (field: keyof Tool, value: any) => {
         setFormData(prev => ({ ...prev, [field]: value }));
+        setValidationErrors([]);
     };
     
     const handleDieChange = (index: number, value: number) => {
@@ -81,10 +84,12 @@ const ToolForm: React.FC<{
     }
 
     const handleSaveClick = () => {
-        if (!formData.name.trim()) {
-            console.warn("Название инструмента не может быть пустым.");
+        const validation = validateTool(formData as Tool);
+        if (!validation.valid) {
+            setValidationErrors(validation.errors);
             return;
         }
+        setValidationErrors([]);
         onSave(formData as Tool);
     };
 
@@ -236,6 +241,14 @@ const ToolForm: React.FC<{
                     </div>
                  </fieldset>
             </div>
+            {validationErrors.length > 0 && (
+                <div role="alert" className="mt-3 rounded border border-red-500/60 bg-red-900/30 p-3 text-sm text-red-200">
+                    <p className="font-semibold mb-1">Инструмент не сохранён:</p>
+                    <ul className="list-disc pl-5 space-y-1">
+                        {validationErrors.map((error, index) => <li key={index}>{error}</li>)}
+                    </ul>
+                </div>
+            )}
             <div className="flex-none pt-4 border-t border-gray-600 flex justify-end space-x-3">
                 <button onClick={onCancel} className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded-md">Отмена</button>
                 {!isNew && <button onClick={() => onDelete((formData as Tool).id)} className="px-4 py-2 bg-red-800 hover:bg-red-700 rounded-md">Удалить</button>}
@@ -276,7 +289,8 @@ export const ToolLibraryView: React.FC<{
     };
 
     const handleSave = (tool: Tool) => {
-        onSaveTool(tool);
+        const savedTool = tool.id ? tool : { ...tool, id: generateId() };
+        onSaveTool(savedTool);
         setEditingTool(null);
     };
 
