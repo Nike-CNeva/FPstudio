@@ -104,7 +104,7 @@ const ToolForm: React.FC<{
                 const parsedEntities = parseDxf(content);
                 if (parsedEntities.length > 0) {
                     // Convert to SVG to get bounding box and path
-                    const { path, width, height } = dxfEntitiesToSvg(parsedEntities);
+                    const { path, width, height, normalizedEntities } = dxfEntitiesToSvg(parsedEntities);
                     
                     if (width === 0 || height === 0) {
                         alert("Ошибка: Пустой или некорректный DXF файл.");
@@ -117,6 +117,7 @@ const ToolForm: React.FC<{
                         width: parseFloat(width.toFixed(3)),
                         height: parseFloat(height.toFixed(3)),
                         customPath: path,
+                        customGeometry: normalizedEntities,
                         shape: ToolShape.Special // Ensure special type is set
                     }));
                 } else {
