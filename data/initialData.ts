@@ -51,6 +51,35 @@ const createTriangleGeometry = (s: number) => {
     }];
 };
 
+/**
+ * Migrates only the exact legacy built-in triangle record.
+ * User-defined Special tools are never rewritten; they must be re-imported from DXF
+ * to acquire source geometry for exact automatic matching.
+ */
+export const migrateLegacyTriangleTool = (tool: Tool): Tool => {
+    const size = 15;
+    const legacyHeight = size * Math.sqrt(3) / 2;
+    const legacyPath = `M 0 ${-legacyHeight/2} L ${size/2} ${legacyHeight/2} L ${-size/2} ${legacyHeight/2} Z`;
+
+    if (
+        tool.name === 'TR_IKLYA' &&
+        tool.shape === ToolShape.Special &&
+        tool.width === size &&
+        tool.height === size &&
+        !tool.customGeometry?.length &&
+        tool.customPath === legacyPath
+    ) {
+        return {
+            ...tool,
+            height: legacyHeight,
+            customPath: createTrianglePath(size),
+            customGeometry: createTriangleGeometry(size)
+        };
+    }
+
+    return tool;
+};
+
 export const initialTools: Tool[] = [
     // --- Station 1 (MT - 24 Stations) ---
     // User Specification: 
