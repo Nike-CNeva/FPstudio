@@ -11,9 +11,9 @@
   "dependencies": {
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "xlsx": "latest",
-    "jspdf": "2.5.1",
-    "jspdf-autotable": "3.8.2"
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "jspdf": "4.2.1",
+    "jspdf-autotable": "5.0.9"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
