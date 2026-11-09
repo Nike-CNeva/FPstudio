@@ -8,6 +8,7 @@ import { generateId, getPunchTypeName } from '../utils/helpers';
 import { validateTool } from '../services/toolValidation';
 import { ToolPreview } from './common/ToolDisplay';
 import { parseDxf, dxfEntitiesToSvg } from '../services/dxfParser';
+import { parseCpTool } from '../services/cpToolParser';
 
 const createNewTool = (): Omit<Tool, 'id'> => ({
   name: 'Новый инструмент',
@@ -50,6 +51,7 @@ const ToolForm: React.FC<{
     const [formData, setFormData] = useState<Tool | Omit<Tool, 'id'>>(editingTool);
     const [validationErrors, setValidationErrors] = useState<string[]>([]);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const cpFileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         setFormData(JSON.parse(JSON.stringify(editingTool))); // Deep copy
@@ -134,6 +136,30 @@ const ToolForm: React.FC<{
         event.target.value = ''; // Reset input
     };
 
+    const handleCpToolUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+
+        try {
+            const parsed = parseCpTool(await file.text(), file.name);
+            setFormData(prev => ({
+                ...prev,
+                name: parsed.name,
+                shape: ToolShape.Special,
+                width: parsed.width,
+                height: parsed.height,
+                customPath: parsed.path,
+                customGeometry: parsed.normalizedEntities
+            }));
+            setValidationErrors([]);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Неизвестная ошибка разбора CP-файла.';
+            alert(`Не удалось загрузить специальный инструмент из CP: ${message}`);
+        } finally {
+            event.target.value = '';
+        }
+    };
+
     const isNew = !('id' in formData);
     const keyAngleOptions = [0, 45, 90, 135, 180, 225, 270, 315];
     const isSpecial = formData.shape === ToolShape.Special;
@@ -157,19 +183,29 @@ const ToolForm: React.FC<{
                         
                         {isSpecial ? (
                             <div className="col-span-2 p-3 bg-gray-800 rounded border border-dashed border-gray-500 flex flex-col items-center">
-                                <p className="text-xs text-gray-400 mb-2">Загрузите DXF контур инструмента для авто-расчета размеров.</p>
-                                <button 
-                                    onClick={() => fileInputRef.current?.click()} 
-                                    className="px-4 py-2 bg-purple-700 hover:bg-purple-600 rounded text-sm text-white flex items-center space-x-2"
-                                >
-                                    <FolderIcon className="w-4 h-4"/>
-                                    <span>Загрузить DXF (.dxf)</span>
-                                </button>
+                                <p className="text-xs text-gray-400 mb-2">Загрузите контур специального инструмента из DXF или Finn-Power CP.</p>
+                                <div className="flex flex-wrap justify-center gap-2">
+                                    <button
+                                        onClick={() => fileInputRef.current?.click()}
+                                        className="px-4 py-2 bg-purple-700 hover:bg-purple-600 rounded text-sm text-white flex items-center space-x-2"
+                                    >
+                                        <FolderIcon className="w-4 h-4"/>
+                                        <span>Загрузить DXF</span>
+                                    </button>
+                                    <button
+                                        onClick={() => cpFileInputRef.current?.click()}
+                                        className="px-4 py-2 bg-indigo-700 hover:bg-indigo-600 rounded text-sm text-white flex items-center space-x-2"
+                                    >
+                                        <FolderIcon className="w-4 h-4"/>
+                                        <span>Загрузить Finn-Power CP</span>
+                                    </button>
+                                </div>
                                 <input type="file" ref={fileInputRef} onChange={handleDxfUpload} accept=".dxf" className="hidden" />
+                                <input type="file" ref={cpFileInputRef} onChange={handleCpToolUpload} accept=".cp,.CP,text/plain" className="hidden" />
                                 {formData.customGeometry?.length
-                                    ? <span className="text-green-400 text-xs mt-2">Геометрия DXF загружена</span>
+                                    ? <span className="text-green-400 text-xs mt-2">Геометрия инструмента загружена</span>
                                     : formData.customPath
-                                        ? <span className="text-amber-400 text-xs mt-2">Повторно загрузите DXF для авторасстановки</span>
+                                        ? <span className="text-amber-400 text-xs mt-2">Повторно загрузите исходный файл для точного сопоставления контура</span>
                                         : null}
                             </div>
                         ) : null}
