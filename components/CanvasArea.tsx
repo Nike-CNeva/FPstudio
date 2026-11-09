@@ -44,6 +44,9 @@ interface CanvasAreaProps {
     selectedNestPartId?: string | null;
     onSelectNestPart?: (id: string | null) => void;
     onMoveNestPart?: (id: string, dx: number, dy: number) => void;
+    onRotateNestPart?: (id: string) => void;
+    onDeleteNestPart?: (id: string) => void;
+    onDuplicateNestPart?: (id: string) => void;
     optimizedOperations?: PunchOp[] | null;
     simulationStep?: number;
 }
@@ -170,6 +173,11 @@ export const CanvasArea: React.FC<CanvasAreaProps> = (props) => {
                                     parts={parts}
                                     tools={tools}
                                     selectedNestPartId={props.selectedNestPartId}
+                                    onSelectNestPart={props.onSelectNestPart}
+                                    onMoveNestPart={props.onMoveNestPart}
+                                    onRotateNestPart={props.onRotateNestPart}
+                                    onDeleteNestPart={props.onDeleteNestPart}
+                                    onDuplicateNestPart={props.onDuplicateNestPart}
                                     optimizedOperations={optimizedOperations}
                                     simulationStep={simulationStep}
                                 />

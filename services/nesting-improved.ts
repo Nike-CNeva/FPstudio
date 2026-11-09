@@ -71,9 +71,15 @@ export async function* nestingGeneratorImproved(
     const completedSheets: NestResultSheet[] = [];
     let remainingItems = [...itemsToPack];
 
+    // Учет остатков заготовок на складе
+    const remainingStock = new Map<string, number>();
+    settings.availableSheets.forEach(s => {
+        remainingStock.set(s.id, s.quantity);
+    });
+
     // 2. Цикл по листам
     while (remainingItems.length > 0) {
-        const currentSheet = selectStockSheet(settings);
+        const currentSheet = selectStockSheet(settings, remainingStock);
         if (!currentSheet) break;
 
         const effectiveW = currentSheet.width - settings.sheetMarginLeft - settings.sheetMarginRight;
@@ -143,26 +149,32 @@ export async function* nestingGeneratorImproved(
             }))
         };
 
-        // Проверка на идентичность с предыдущим листом
-        const lastSheet = completedSheets.length > 0 ? completedSheets[completedSheets.length - 1] : null;
-        
-        if (lastSheet && areSheetsIdentical(lastSheet, resultSheet)) {
-            // Если листы идентичны, увеличиваем счетчик предыдущего
-            const updatedLastSheet = { ...lastSheet, quantity: lastSheet.quantity + 1 };
-            completedSheets[completedSheets.length - 1] = updatedLastSheet;
+        // Списание использованной заготовки со склада
+        const prevQty = remainingStock.get(currentSheet.id) ?? 1;
+        remainingStock.set(currentSheet.id, Math.max(0, prevQty - 1));
+
+        // Проверка на идентичность с ЛЮБЫМ из уже готовых листов (складываем одинаковые карты)
+        let matchedIndex = -1;
+        for (let i = 0; i < completedSheets.length; i++) {
+            if (areSheetsIdentical(completedSheets[i], resultSheet)) {
+                matchedIndex = i;
+                break;
+            }
+        }
+
+        if (matchedIndex !== -1) {
+            // Если лист идентичен существующему, увеличиваем его тираж (quantity)
+            const target = completedSheets[matchedIndex];
+            const updated = { ...target, quantity: target.quantity + 1 };
+            completedSheets[matchedIndex] = updated;
             
             yield { 
                 sheets: [...completedSheets], 
                 progress: (totalPackedCount / totalToPack) * 100, 
-                status: `Лист #${completedSheets.length} (x${updatedLastSheet.quantity}) готов` 
+                status: `Лист #${matchedIndex + 1} (тираж x${updated.quantity}) сгруппирован` 
             };
         } else {
-            // Иначе добавляем новый лист
-            // Если были сгруппированные листы до этого, нужно обновить имя текущего?
-            // Обычно Sheet 1, Sheet 2... Если Sheet 1 имеет quantity 5, следующий будет Sheet 2 или Sheet 6?
-            // Обычно в интерфейсе просто список уникальных раскладок. Пусть будет Sheet N по порядку уникальных.
             resultSheet.sheetName = `Sheet ${completedSheets.length + 1}`;
-            
             completedSheets.push(resultSheet);
             yield { 
                 sheets: [...completedSheets], 
@@ -222,28 +234,32 @@ function createPacker(
                 width, height, 
                 partSpacingX, partSpacingY, 
                 useCommonLine, 
-                parts, tools
+                parts, tools,
+                settings
             );
         
         case 'complex-basic':
             return new ComplexPacker(
                 width, height,
                 partSpacingX, partSpacingY,
-                parts, tools
+                parts, tools,
+                settings
             );
         
         case 'complex-fast':
             return new ComplexPackerFast(
                 width, height,
                 partSpacingX, partSpacingY,
-                parts, tools
+                parts, tools,
+                settings
             );
         
         case 'bottom-left':
             return new BottomLeftPacker(
                 width, height,
                 partSpacingX, partSpacingY,
-                parts, tools
+                parts, tools,
+                settings
             );
         
         case 'hybrid':
@@ -255,19 +271,22 @@ function createPacker(
                     width, height,
                     partSpacingX, partSpacingY,
                     useCommonLine,
-                    parts, tools
+                    parts, tools,
+                    settings
                 );
             } else if (remainingItemsCount < 10) {
                 return new BottomLeftPacker(
                     width, height,
                     partSpacingX, partSpacingY,
-                    parts, tools
+                    parts, tools,
+                    settings
                 );
             } else {
                 return new ComplexPackerFast(
                     width, height,
                     partSpacingX, partSpacingY,
-                    parts, tools
+                    parts, tools,
+                    settings
                 );
             }
     }

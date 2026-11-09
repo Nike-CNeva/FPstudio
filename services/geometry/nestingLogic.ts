@@ -54,3 +54,87 @@ export const calculateNestingSnap = (draggedPart: PlacedPart, placedParts: Place
     }
     return bestSnap ? { x: bestSnap.x, y: bestSnap.y } : null;
 };
+
+export interface PartCollisionStatus {
+    isSafe: boolean;
+    outOfBounds: boolean;
+    clampCollision: boolean;
+    partOverlap: boolean;
+    collidingPartNames: string[];
+}
+
+export const checkPlacedPartCollision = (
+    placedPart: PlacedPart,
+    partDef: Part,
+    allPlacedParts: PlacedPart[],
+    allParts: Part[],
+    settings: {
+        sheetMarginLeft: number;
+        sheetMarginRight: number;
+        sheetMarginTop: number;
+        sheetMarginBottom: number;
+        clampPositions: number[];
+        nestUnderClamps: boolean;
+    },
+    sheetWidth: number,
+    sheetHeight: number
+): PartCollisionStatus => {
+    const vertices = getRotatedRectVertices(placedPart.x, placedPart.y, partDef.geometry.width, partDef.geometry.height, placedPart.rotation);
+    
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const v of vertices) {
+        if (v.x < minX) minX = v.x;
+        if (v.x > maxX) maxX = v.x;
+        if (v.y < minY) minY = v.y;
+        if (v.y > maxY) maxY = v.y;
+    }
+
+    const marginL = settings.sheetMarginLeft || 0;
+    const marginR = settings.sheetMarginRight || 0;
+    const marginB = settings.sheetMarginBottom || 0;
+    const marginT = settings.sheetMarginTop || 0;
+
+    const outOfBounds = minX < marginL - 0.01 || maxX > (sheetWidth - marginR) + 0.01 ||
+                        minY < marginB - 0.01 || maxY > (sheetHeight - marginT) + 0.01;
+
+    let clampCollision = false;
+    if (!settings.nestUnderClamps && settings.clampPositions) {
+        for (const cx of settings.clampPositions) {
+            const clampMinX = cx - 40;
+            const clampMaxX = cx + 40;
+            const clampMinY = 0;
+            const clampMaxY = 50;
+
+            if (maxX >= clampMinX && minX <= clampMaxX && maxY >= clampMinY && minY <= clampMaxY) {
+                clampCollision = true;
+                break;
+            }
+        }
+    }
+
+    const collidingPartNames: string[] = [];
+    let partOverlap = false;
+
+    for (const other of allPlacedParts) {
+        if (other.id === placedPart.id) continue;
+        const otherDef = allParts.find(p => p.id === other.partId);
+        if (!otherDef) continue;
+
+        if (doPartsIntersect(partDef, { x: placedPart.x, y: placedPart.y }, placedPart.rotation, otherDef, { x: other.x, y: other.y }, other.rotation)) {
+            partOverlap = true;
+            if (!collidingPartNames.includes(otherDef.name)) {
+                collidingPartNames.push(otherDef.name);
+            }
+        }
+    }
+
+    const isSafe = !outOfBounds && !clampCollision && !partOverlap;
+
+    return {
+        isSafe,
+        outOfBounds,
+        clampCollision,
+        partOverlap,
+        collidingPartNames
+    };
+};

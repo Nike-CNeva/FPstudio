@@ -573,7 +573,95 @@ export const calculateOptimizedPath = (
         }
     }
 
-    return finalOps;
+    const { ops: deduplicatedOps } = deduplicateCommonPunches(finalOps, tools);
+    return deduplicatedOps;
+};
+
+/**
+ * Deduplicates overlapping punch operations on common cut lines between adjacent parts.
+ * Retains single punch per spatial location (within 0.05 mm tolerance) for the same tool and orientation.
+ */
+export const deduplicateCommonPunches = (ops: PunchOp[], tools: Tool[]): { ops: PunchOp[], savedCount: number } => {
+    const deduplicated: PunchOp[] = [];
+    const keySet = new Set<string>();
+    let savedCount = 0;
+
+    for (const op of ops) {
+        const tool = tools.find(t => t.id === op.toolId);
+        const sym = tool ? (tool.shape === ToolShape.Circle ? 360 : (tool.shape === ToolShape.Square ? 90 : 180)) : 180;
+        const normRot = Math.round((((op.rotation % sym) + sym) % sym) * 10) / 10;
+        
+        // Grid key at 0.05mm spatial precision
+        const gridX = Math.round(op.x * 20) / 20;
+        const gridY = Math.round(op.y * 20) / 20;
+
+        const key = `${op.toolId}_${gridX}_${gridY}_${normRot}`;
+
+        if (!keySet.has(key)) {
+            keySet.add(key);
+            deduplicated.push(op);
+        } else {
+            savedCount++;
+        }
+    }
+    return { ops: deduplicated, savedCount };
+};
+
+export interface MachiningEstimate {
+    totalHits: number;
+    savedHits: number;
+    toolChanges: number;
+    rapidDistanceMeters: number;
+    estimatedTimeSeconds: number;
+    formattedTime: string;
+}
+
+/**
+ * Calculates accurate machining cycle time and analytics for Finn-Power press operations.
+ */
+export const estimateMachiningTime = (
+    ops: PunchOp[],
+    tools: Tool[],
+    machineSettings?: MachineSettings,
+    originalHitsCount?: number
+): MachiningEstimate => {
+    const totalHits = ops.length;
+    const savedHits = originalHitsCount ? Math.max(0, originalHitsCount - totalHits) : 0;
+    
+    let toolChanges = 0;
+    let rapidDistMm = 0;
+    let lastX = 0;
+    let lastY = 0;
+
+    ops.forEach(op => {
+        if (op.isToolChange) toolChanges++;
+        const dist = Math.hypot(op.x - lastX, op.y - lastY);
+        rapidDistMm += dist;
+        lastX = op.x;
+        lastY = op.y;
+    });
+
+    const slewSpeedMMin = machineSettings?.maxSlewSpeed || 30;
+    const strokePerMin = 400;
+    const turretChangeSec = 1.8;
+
+    const traverseSec = (rapidDistMm / 1000) / (slewSpeedMMin / 60);
+    const punchSec = (totalHits / strokePerMin) * 60;
+    const toolChangeSec = toolChanges * turretChangeSec;
+
+    const totalSec = Math.round(traverseSec + punchSec + toolChangeSec);
+    const minutes = Math.floor(totalSec / 60);
+    const seconds = totalSec % 60;
+    const formattedTime = minutes > 0 ? `${minutes} мин ${seconds} сек` : `${seconds} сек`;
+
+    return {
+        totalHits,
+        savedHits,
+        toolChanges,
+        rapidDistanceMeters: Math.round((rapidDistMm / 1000) * 10) / 10,
+        estimatedTimeSeconds: totalSec,
+        formattedTime
+    };
 };
 
 /**
@@ -596,11 +684,15 @@ export const generateGCode = (
     const dateStr = new Date().toLocaleDateString('en-US');
 
     // Use pre-calc ops or calculate new
-    const ops = preCalculatedOps || calculateOptimizedPath(sheet, parts, tools, optimizerSettings);
+    const rawOps = preCalculatedOps || calculateOptimizedPath(sheet, parts, tools, optimizerSettings);
+    const { ops, savedCount } = deduplicateCommonPunches(rawOps, tools);
+
+    const estimate = estimateMachiningTime(ops, tools, machineSettings, rawOps.length);
 
     // Build Header
     let gcode = `%\nO${programNumber.toString().padStart(4, '0')}(${ncFilename})\n`;
     gcode += `(SHEET ${sheet.width}x${sheet.height} QTY=${sheet.quantity} ${dateStr})\n`;
+    gcode += `(ESTIMATED TIME: ${estimate.formattedTime} | HITS=${estimate.totalHits} COMMON_SAVED=${savedCount} TRAVERSE=${estimate.rapidDistanceMeters}m)\n`;
     const clampStr = clampPositions.map((c, i) => `CLAMP ${i+1}=${c}`).join(' ');
     gcode += `(${clampStr})\n`;
 

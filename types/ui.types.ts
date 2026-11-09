@@ -87,6 +87,8 @@ export interface AppUIProps {
     onClearNest: () => void;
     onMoveNestPart: (id: string, dx: number, dy: number) => void;
     onRotateNestPart: (id: string) => void;
+    onDeleteNestPart?: (id: string) => void;
+    onDuplicateNestPart?: (id: string) => void;
     onUpdateNestingSettings: (s: any, sp: ScheduledPart[]) => void;
     onUpdateNestMetadata: (m: any) => void;
     onUpdateActivePart: (u: Partial<Part>) => void;

@@ -1,6 +1,6 @@
 
 import { INestingPacker, PackerItem, PlacedResult } from '../types';
-import { Part, Tool, Point } from '../../../types';
+import { Part, Tool, Point, NestingSettings } from '../../../types';
 import { getRotatedExtents, isPointInsideContour } from '../../geometry';
 
 interface RasterMask {
@@ -27,12 +27,36 @@ export class ComplexPacker implements INestingPacker {
         private readonly spacingX: number,
         private readonly spacingY: number,
         private readonly parts: Part[],
-        private readonly tools: Tool[]
+        private readonly tools: Tool[],
+        private readonly settings?: NestingSettings
     ) {
         this.gridW = Math.ceil(sheetW / this.resolution);
         this.gridH = Math.ceil(sheetH / this.resolution);
         // Initialize grid with 0 (empty)
         this.grid = new Uint8Array(this.gridW * this.gridH);
+    }
+
+    private isClampCollision(x: number, y: number, width: number, height: number): boolean {
+        if (!this.settings || this.settings.nestUnderClamps) return false;
+        const marginLeft = this.settings.sheetMarginLeft || 0;
+        const marginBottom = this.settings.sheetMarginBottom || 0;
+        
+        const sheetX1 = x + marginLeft;
+        const sheetX2 = sheetX1 + width;
+        const sheetY1 = y + marginBottom;
+        
+        const clampDeadZoneY = 80;
+        if (sheetY1 > clampDeadZoneY) return false;
+
+        const clampHalfWidth = 65;
+        for (const clampX of this.settings.clampPositions || []) {
+            const cMin = clampX - clampHalfWidth;
+            const cMax = clampX + clampHalfWidth;
+            if (Math.max(0, Math.min(sheetX2, cMax) - Math.max(sheetX1, cMin)) > 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     async findPosition(item: PackerItem): Promise<PlacedResult | null> {
@@ -82,9 +106,16 @@ export class ComplexPacker implements INestingPacker {
                 }
 
                 for (let y = 0; y <= limitY; y += step) {
+                    const physX = x * this.resolution;
+                    const physY = y * this.resolution;
+                    const physicalExtents = getRotatedExtents(partDef, rot, this.tools);
+                    if (this.isClampCollision(physX, physY, physicalExtents.width, physicalExtents.height)) {
+                        continue;
+                    }
+
                     if (!this.checkCollision(x, y, mask)) {
                         foundPosForRot = { x, y };
-                        break xLoop; // Found the best X for this rotation (since we scan X increasing)
+                        break xLoop;
                     }
                 }
             }

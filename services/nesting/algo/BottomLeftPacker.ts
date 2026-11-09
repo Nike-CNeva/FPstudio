@@ -1,11 +1,12 @@
 
 import { INestingPacker, PackerItem, PlacedResult } from '../types';
-import { Part, Tool, Point } from '../../../types';
+import { Part, Tool, Point, NestingSettings } from '../../../types';
 import { getRotatedExtents, doPartsIntersect } from '../../geometry';
 
 /**
- * BOTTOM-LEFT-FILL АЛГОРИТМ
- * Размещает детали как можно ниже и левее, максимизируя плотность упаковки
+ * BOTTOM-LEFT / DIRECTIONAL FILL АЛГОРИТМ
+ * Размещает детали в соответствии с заданным направлением (например, Top-Left или Bottom-Left),
+ * соблюдая зоны зажимов листа.
  */
 export class BottomLeftPacker implements INestingPacker {
     private placed: { item: PackerItem; result: PlacedResult }[] = [];
@@ -16,11 +17,69 @@ export class BottomLeftPacker implements INestingPacker {
         private readonly spacingX: number,
         private readonly spacingY: number,
         private readonly parts: Part[],
-        private readonly tools: Tool[]
+        private readonly tools: Tool[],
+        private readonly settings?: NestingSettings
     ) {}
 
     /**
-     * Находит самую нижнюю и левую позицию для детали
+     * Проверка попадания детали в защитную зону зажимов листа
+     */
+    private isClampCollision(x: number, y: number, width: number, height: number): boolean {
+        if (!this.settings || this.settings.nestUnderClamps) return false;
+        const marginLeft = this.settings.sheetMarginLeft || 0;
+        const marginBottom = this.settings.sheetMarginBottom || 0;
+        
+        const sheetX1 = x + marginLeft;
+        const sheetX2 = sheetX1 + width;
+        const sheetY1 = y + marginBottom;
+        
+        const clampDeadZoneY = 80;
+        if (sheetY1 > clampDeadZoneY) return false;
+
+        const clampHalfWidth = 65;
+        for (const clampX of this.settings.clampPositions || []) {
+            const cMin = clampX - clampHalfWidth;
+            const cMax = clampX + clampHalfWidth;
+            if (Math.max(0, Math.min(sheetX2, cMax) - Math.max(sheetX1, cMin)) > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Оценка штрафа позиции в зависимости от направления раскроя (0..8)
+     */
+    private calculateDirectionPenalty(x: number, y: number, w: number, h: number): number {
+        const dir = this.settings?.nestingDirection ?? 6;
+        const topGap = this.sheetH - (y + h);
+        const rightGap = this.sheetW - (x + w);
+
+        switch (dir) {
+            case 6: // Top-Left
+                return topGap * 1000 + x;
+            case 7: // Top-Center
+                return topGap * 1000 + Math.abs(x + w / 2 - this.sheetW / 2);
+            case 8: // Top-Right
+                return topGap * 1000 + rightGap;
+            case 3: // Center-Left
+                return Math.abs(y + h / 2 - this.sheetH / 2) * 1000 + x;
+            case 4: // Center
+                return Math.hypot(x + w / 2 - this.sheetW / 2, y + h / 2 - this.sheetH / 2);
+            case 5: // Center-Right
+                return Math.abs(y + h / 2 - this.sheetH / 2) * 1000 + rightGap;
+            case 1: // Bottom-Center
+                return y * 1000 + Math.abs(x + w / 2 - this.sheetW / 2);
+            case 2: // Bottom-Right
+                return y * 1000 + rightGap;
+            case 0: // Bottom-Left
+            default:
+                return y * 1000 + x;
+        }
+    }
+
+    /**
+     * Находит наилучшую позицию для детали с учетом направления
      */
     async findPosition(item: PackerItem): Promise<PlacedResult | null> {
         const partDef = this.parts.find(p => p.id === item.partId);
@@ -32,27 +91,27 @@ export class BottomLeftPacker implements INestingPacker {
         }
 
         let bestPosition: PlacedResult | null = null;
-        let lowestY = Infinity;
-        let leftmostX = Infinity;
+        let bestScore = Infinity;
 
         // Перебираем ротации
         for (const rot of rotationCandidates) {
             const extents = getRotatedExtents(partDef, rot, this.tools);
             if (extents.width > this.sheetW || extents.height > this.sheetH) continue;
 
-            // Генерируем кандидатские позиции на основе уже размещенных деталей
             const candidatePositions = this.generateCandidatePositions(extents.width, extents.height);
             
             let lastYieldTime = Date.now();
             for (const { x, y } of candidatePositions) {
-                // Yield periodically
                 const now = Date.now();
-                if (now - lastYieldTime > 50) {
+                if (now - lastYieldTime > 40) {
                     await new Promise(r => setTimeout(r, 0));
                     lastYieldTime = Date.now();
                 }
 
-                if (x + extents.width > this.sheetW || y + extents.height > this.sheetH) continue;
+                if (x < 0 || y < 0 || x + extents.width > this.sheetW || y + extents.height > this.sheetH) continue;
+
+                // Проверка зажимов
+                if (this.isClampCollision(x, y, extents.width, extents.height)) continue;
 
                 const candidateOrigin: Point = { x: x + extents.ox, y: y + extents.oy };
                 
@@ -78,10 +137,9 @@ export class BottomLeftPacker implements INestingPacker {
                 }
 
                 if (!collision) {
-                    // Bottom-Left критерий: сначала Y (ниже), затем X (левее)
-                    if (y < lowestY || (y === lowestY && x < leftmostX)) {
-                        lowestY = y;
-                        leftmostX = x;
+                    const score = this.calculateDirectionPenalty(x, y, extents.width, extents.height);
+                    if (score < bestScore) {
+                        bestScore = score;
                         bestPosition = {
                             x, y,
                             rotation: rot,
@@ -99,46 +157,57 @@ export class BottomLeftPacker implements INestingPacker {
     }
 
     /**
-     * Генерирует умные кандидатские позиции на основе уже размещенных деталей
+     * Генерирует кандидатские позиции на основе целевого угла и существующих деталей
      */
     private generateCandidatePositions(itemWidth: number, itemHeight: number): { x: number; y: number }[] {
         const positions: { x: number; y: number }[] = [];
-        
-        // Всегда проверяем начало координат
-        positions.push({ x: 0, y: 0 });
+        const dir = this.settings?.nestingDirection ?? 6;
 
-        // Генерируем позиции на основе углов существующих деталей
+        // Начальные угловые точки в зависимости от направления
+        positions.push({ x: 0, y: 0 }); // Bottom-Left
+        positions.push({ x: 0, y: Math.max(0, this.sheetH - itemHeight) }); // Top-Left
+        positions.push({ x: Math.max(0, this.sheetW - itemWidth), y: Math.max(0, this.sheetH - itemHeight) }); // Top-Right
+        positions.push({ x: Math.max(0, this.sheetW - itemWidth), y: 0 }); // Bottom-Right
+
+        // Генерируем позиции на основе существующих деталей
         for (const placed of this.placed) {
             const { x, y, width, height } = placed.result;
             
-            // Правый нижний угол (справа от детали)
+            // Справа от детали
             positions.push({ x: x + width + this.spacingX, y: y });
-            
-            // Левый верхний угол (сверху от детали)
+            // Слева от детали
+            positions.push({ x: x - itemWidth - this.spacingX, y: y });
+            // Сверху от детали
             positions.push({ x: x, y: y + height + this.spacingY });
+            // Снизу от детали
+            positions.push({ x: x, y: y - itemHeight - this.spacingY });
             
-            // Правый верхний угол (по диагонали)
+            // Диагональные углы
             positions.push({ x: x + width + this.spacingX, y: y + height + this.spacingY });
-            
-            // Дополнительная позиция: на одной линии с верхним краем, слева
-            positions.push({ x: 0, y: y + height + this.spacingY });
+            positions.push({ x: x + width + this.spacingX, y: y - itemHeight - this.spacingY });
+            positions.push({ x: x - itemWidth - this.spacingX, y: y + height + this.spacingY });
+            positions.push({ x: x - itemWidth - this.spacingX, y: y - itemHeight - this.spacingY });
         }
 
-        // Удаляем дубликаты и сортируем по Bottom-Left критерию
-        const uniquePositions = Array.from(
-            new Set(positions.map(p => `${p.x},${p.y}`))
-        ).map(key => {
-            const [x, y] = key.split(',').map(Number);
-            return { x, y };
+        // Фильтруем допустимые неотрицательные координаты
+        const validPositions = positions.filter(p => p.x >= 0 && p.y >= 0 && p.x + itemWidth <= this.sheetW && p.y + itemHeight <= this.sheetH);
+
+        // Удаляем дубликаты
+        const uniqueMap = new Map<string, { x: number; y: number }>();
+        for (const p of validPositions) {
+            const k = `${Math.round(p.x)},${Math.round(p.y)}`;
+            if (!uniqueMap.has(k)) uniqueMap.set(k, p);
+        }
+
+        const result = Array.from(uniqueMap.values());
+
+        // Сортируем согласно штрафу направления
+        result.sort((a, b) => {
+            return this.calculateDirectionPenalty(a.x, a.y, itemWidth, itemHeight) -
+                   this.calculateDirectionPenalty(b.x, b.y, itemWidth, itemHeight);
         });
 
-        // Сортировка: сначала по Y (снизу вверх), затем по X (слева направо)
-        uniquePositions.sort((a, b) => {
-            if (a.y !== b.y) return a.y - b.y;
-            return a.x - b.x;
-        });
-
-        return uniquePositions;
+        return result;
     }
 
     placeItem(item: PackerItem, result: PlacedResult) {

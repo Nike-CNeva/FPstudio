@@ -3,17 +3,19 @@
  * ОТВЕТСТВЕННОСТЬ: Статистика раскроя, список листов и состав выбранного листа.
  */
 import React, { useMemo } from 'react';
-import { NestLayout, Part } from '../../types';
+import { NestLayout, Part, Tool } from '../../types';
+import { calculateOptimizedPath, estimateMachiningTime } from '../../services/gcode';
 
 interface NestingPanelProps {
     activeNest: NestLayout | null;
     activeSheetIndex: number;
     setActiveSheetIndex: (index: number) => void;
     allParts: Part[];
+    tools?: Tool[];
 }
 
 export const NestingPanel: React.FC<NestingPanelProps> = ({
-    activeNest, activeSheetIndex, setActiveSheetIndex, allParts
+    activeNest, activeSheetIndex, setActiveSheetIndex, allParts, tools = []
 }) => {
     
     const stats = useMemo(() => {
@@ -37,6 +39,13 @@ export const NestingPanel: React.FC<NestingPanelProps> = ({
             sheetsByDim
         };
     }, [activeNest]);
+
+    const activeSheetEstimate = useMemo(() => {
+        if (!activeNest || !activeNest.sheets[activeSheetIndex] || tools.length === 0) return null;
+        const currentSheet = activeNest.sheets[activeSheetIndex];
+        const ops = calculateOptimizedPath(currentSheet, allParts, tools);
+        return estimateMachiningTime(ops, tools);
+    }, [activeNest, activeSheetIndex, allParts, tools]);
 
     const getPartsOnSheet = (idx: number) => {
         if (!activeNest?.sheets[idx]) return [];
@@ -79,6 +88,29 @@ export const NestingPanel: React.FC<NestingPanelProps> = ({
                         </div>
                     ))}
                 </div>
+
+                {activeSheetEstimate && (
+                    <div className="bg-blue-950/40 border border-blue-800/60 p-2 rounded text-xs space-y-1">
+                        <div className="flex justify-between text-blue-200 font-semibold border-b border-blue-800/40 pb-1 mb-1">
+                            <span>Время пробивки:</span>
+                            <span className="font-bold text-cyan-300">{activeSheetEstimate.formattedTime}</span>
+                        </div>
+                        <div className="flex justify-between text-gray-300">
+                            <span>Ударов пуансона:</span>
+                            <span className="font-mono">{activeSheetEstimate.totalHits}</span>
+                        </div>
+                        {activeSheetEstimate.savedHits > 0 && (
+                            <div className="flex justify-between text-green-300 font-medium">
+                                <span>Сэкономлено (совмещенный рез):</span>
+                                <span className="font-mono">-{activeSheetEstimate.savedHits}</span>
+                            </div>
+                        )}
+                        <div className="flex justify-between text-gray-400">
+                            <span>Перемещение осей:</span>
+                            <span className="font-mono">{activeSheetEstimate.rapidDistanceMeters} м</span>
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* List of Sheets */}

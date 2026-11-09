@@ -108,6 +108,35 @@ const App: React.FC = () => {
                 })};
                 persistence.setNests(n => n.map(x => x.id === nesting.activeNestId ? {...x, sheets: newSheets} : x));
             }}
+            onDeleteNestPart={(id) => {
+                if (!derived.activeNest || !derived.currentNestSheet) return;
+                const newSheets = [...derived.activeNest.sheets];
+                newSheets[nesting.activeSheetIndex] = {
+                    ...derived.currentNestSheet,
+                    placedParts: derived.currentNestSheet.placedParts.filter(p => p.id !== id)
+                };
+                persistence.setNests(n => n.map(x => x.id === nesting.activeNestId ? {...x, sheets: newSheets} : x));
+                nesting.setSelectedNestPartId(null);
+            }}
+            onDuplicateNestPart={(id) => {
+                if (!derived.activeNest || !derived.currentNestSheet) return;
+                const target = derived.currentNestSheet.placedParts.find(p => p.id === id);
+                if (!target) return;
+                const newId = generateId();
+                const newPart = {
+                    ...target,
+                    id: newId,
+                    x: target.x + 15,
+                    y: target.y + 15
+                };
+                const newSheets = [...derived.activeNest.sheets];
+                newSheets[nesting.activeSheetIndex] = {
+                    ...derived.currentNestSheet,
+                    placedParts: [...derived.currentNestSheet.placedParts, newPart]
+                };
+                persistence.setNests(n => n.map(x => x.id === nesting.activeNestId ? {...x, sheets: newSheets} : x));
+                nesting.setSelectedNestPartId(newId);
+            }}
             onUpdateNestingSettings={(s, sp) => persistence.setNests(prev => prev.map(n => n.id === nesting.activeNestId ? { ...n, settings: s, scheduledParts: sp } : n))}
             onUpdateNestMetadata={(m) => persistence.setNests(prev => prev.map(n => n.id === nesting.activeNestId ? { ...n, ...m } : n))}
             onUpdateActivePart={(u) => editor.setActivePart(p => p ? {...p, ...u} : null)}

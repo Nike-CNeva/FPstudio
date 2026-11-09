@@ -228,10 +228,19 @@ export const preparePackerItemsImproved = (
         const part = allParts.find(p => p.id === sp.partId);
         if (!part) continue;
 
-        const ext0 = getRotatedExtents(part, 0, tools);
-        const allowed: number[] = [0];
-        if (sp.nesting.allow0_180) allowed.push(180);
-        if (sp.nesting.allow90_270) { allowed.push(90); allowed.push(270); }
+        const initRot = sp.nesting.initialRotation || 0;
+        const ext0 = getRotatedExtents(part, initRot, tools);
+        const allowed: number[] = [initRot];
+        if (sp.nesting.allow0_180) {
+            const rot180 = (initRot + 180) % 360;
+            if (!allowed.includes(rot180)) allowed.push(rot180);
+        }
+        if (sp.nesting.allow90_270) {
+            const rot90 = (initRot + 90) % 360;
+            const rot270 = (initRot + 270) % 360;
+            if (!allowed.includes(rot90)) allowed.push(rot90);
+            if (!allowed.includes(rot270)) allowed.push(rot270);
+        }
 
         for (let i = 0; i < sp.quantity; i++) {
             items.push({
@@ -243,6 +252,7 @@ export const preparePackerItemsImproved = (
                 offsetX: ext0.ox,
                 offsetY: ext0.oy,
                 allowedRotations: allowed,
+                preferredRotation: initRot,
                 hasCommonLine: sp.nesting.commonLine,
                 area: ext0.width * ext0.height,
                 aspectRatio: ext0.width / ext0.height

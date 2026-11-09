@@ -1,11 +1,12 @@
 
 import { INestingPacker, PackerItem, PlacedResult } from '../types';
-import { Part, Tool, Point } from '../../../types';
+import { Part, Tool, Point, NestingSettings } from '../../../types';
 import { getRotatedExtents, doPartsIntersect } from '../../geometry';
 
 /**
  * ОПТИМИЗИРОВАННЫЙ COMPLEX PACKER
- * Использует адаптивный шаг поиска и пространственную индексацию
+ * Использует адаптивный шаг поиска, пространственную индексацию,
+ * сканирование в направлении nestingDirection и учет зажимов.
  */
 export class ComplexPackerFast implements INestingPacker {
     private placed: { item: PackerItem; result: PlacedResult }[] = [];
@@ -18,11 +19,38 @@ export class ComplexPackerFast implements INestingPacker {
         private readonly spacingX: number,
         private readonly spacingY: number,
         private readonly parts: Part[],
-        private readonly tools: Tool[]
+        private readonly tools: Tool[],
+        private readonly settings?: NestingSettings
     ) {
         // Пространственная сетка для ускорения проверки пересечений
         this.gridCellSize = 100; // Размер ячейки сетки
         this.spatialGrid = new Map();
+    }
+
+    /**
+     * Проверка попадания детали в защитную зону зажимов листа
+     */
+    private isClampCollision(x: number, y: number, width: number, height: number): boolean {
+        if (!this.settings || this.settings.nestUnderClamps) return false;
+        const marginLeft = this.settings.sheetMarginLeft || 0;
+        const marginBottom = this.settings.sheetMarginBottom || 0;
+        
+        const sheetX1 = x + marginLeft;
+        const sheetX2 = sheetX1 + width;
+        const sheetY1 = y + marginBottom;
+        
+        const clampDeadZoneY = 80;
+        if (sheetY1 > clampDeadZoneY) return false;
+
+        const clampHalfWidth = 65;
+        for (const clampX of this.settings.clampPositions || []) {
+            const cMin = clampX - clampHalfWidth;
+            const cMax = clampX + clampHalfWidth;
+            if (Math.max(0, Math.min(sheetX2, cMax) - Math.max(sheetX1, cMin)) > 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -99,21 +127,37 @@ export class ComplexPackerFast implements INestingPacker {
             rotationCandidates.unshift(item.preferredRotation);
         }
 
+        const dir = this.settings?.nestingDirection ?? 6;
+        const isTopFirst = dir === 6 || dir === 7 || dir === 8;
+        const isRightFirst = dir === 2 || dir === 5 || dir === 8;
+
         // Грубый проход
         let lastYieldTime = Date.now();
         for (const rot of rotationCandidates) {
             const extents = getRotatedExtents(partDef, rot, this.tools);
             if (extents.width > this.sheetW || extents.height > this.sheetH) continue;
 
-            for (let x = 0; x <= this.sheetW - extents.width; x += coarseStep) {
-                // Асинхронная пауза каждые 50мс для отзывчивости UI
+            const startX = isRightFirst ? Math.max(0, this.sheetW - extents.width) : 0;
+            const endX = isRightFirst ? 0 : Math.max(0, this.sheetW - extents.width);
+            const stepX = isRightFirst ? -coarseStep : coarseStep;
+
+            const startY = isTopFirst ? Math.max(0, this.sheetH - extents.height) : 0;
+            const endY = isTopFirst ? 0 : Math.max(0, this.sheetH - extents.height);
+            const stepY = isTopFirst ? -coarseStep : coarseStep;
+
+            for (let x = startX; isRightFirst ? x >= endX : x <= endX; x += stepX) {
+                // Асинхронная пауза каждые 40мс для отзывчивости UI
                 const now = Date.now();
-                if (now - lastYieldTime > 50) {
+                if (now - lastYieldTime > 40) {
                     await new Promise(resolve => setTimeout(resolve, 0));
                     lastYieldTime = Date.now();
                 }
 
-                for (let y = 0; y <= this.sheetH - extents.height; y += coarseStep) {
+                for (let y = startY; isTopFirst ? y >= endY : y <= endY; y += stepY) {
+                    if (this.isClampCollision(x, y, extents.width, extents.height)) {
+                        continue;
+                    }
+
                     const candidateOrigin: Point = { x: x + extents.ox, y: y + extents.oy };
                     
                     // Проверка пересечений только с близкими деталями
@@ -140,17 +184,14 @@ export class ComplexPackerFast implements INestingPacker {
                     }
 
                     if (!collision) {
-                        candidates.push({ 
+                        return { 
                             x, y, 
                             rotation: rot, 
                             ox: extents.ox, 
                             oy: extents.oy, 
                             width: extents.width, 
                             height: extents.height 
-                        });
-                        
-                        // Возвращаем первую найденную позицию (Bottom-Left стратегия)
-                        return candidates[0];
+                        };
                     }
                 }
             }

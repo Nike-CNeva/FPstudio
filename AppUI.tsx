@@ -103,6 +103,9 @@ export const AppUI: React.FC<AppUIProps> = (props) => {
         selectedNestPartId: props.selectedNestPartId,
         onSelectNestPart: props.onSelectNestPart,
         onMoveNestPart: props.onMoveNestPart,
+        onRotateNestPart: props.onRotateNestPart,
+        onDeleteNestPart: props.onDeleteNestPart,
+        onDuplicateNestPart: props.onDuplicateNestPart,
         optimizedOperations: props.optimizedOperations,
         simulationStep: props.simulationStep,
     };

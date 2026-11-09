@@ -44,6 +44,7 @@ export const RightPanel: React.FC<RightPanelProps> = (props) => {
                         activeSheetIndex={activeSheetIndex}
                         setActiveSheetIndex={setActiveSheetIndex}
                         allParts={allParts}
+                        tools={props.tools}
                     />
 
                     {optimizedOperations && (
