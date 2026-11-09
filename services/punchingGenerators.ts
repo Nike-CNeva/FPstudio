@@ -369,20 +369,6 @@ export const detectLoopTools = (
                 }
             }
         }
-        if (oblongMatches.length > 0) {
-            const tool = oblongMatches[0];
-            let rot = 0;
-            const match0 = Math.abs(tool.width - w) < settings.toleranceRound && Math.abs(tool.height - h) < settings.toleranceRound;
-            const match90 = Math.abs(tool.width - h) < settings.toleranceRound && Math.abs(tool.height - w) < settings.toleranceRound;
-
-            if (match0 || match90) {
-                if (match90) rot = 90;
-                punches.push({ toolId: tool.id, x: cx, y: cy, rotation: rot });
-                loop.segmentIndices.forEach(idx => coveredIndices.add(idx));
-                return; 
-            }
-        }
-
         const rectMatches = getPreferredTools('rect', w, h, tools, settings.toleranceRectLength);
         if (rectMatches.length > 0) {
             const tool = rectMatches[0];
