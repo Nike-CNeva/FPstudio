@@ -38,192 +38,272 @@ export const ExcelImportModal: React.FC<ExcelImportModalProps> = ({ onClose, scr
     };
 
     const processExcel = async (file: File) => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            try {
-                const data = e.target?.result;
-                const workbook = XLSX.read(data, { type: 'binary' });
-                const sheetName = workbook.SheetNames[0];
-                const sheet = workbook.Sheets[sheetName];
-                const rows = XLSX.utils.sheet_to_json<any>(sheet); // Raw JSON
+        const MAX_FILE_SIZE = 10 * 1024 * 1024;
+        const MAX_ROWS = 5000;
+        const MAX_COLUMNS = 100;
 
-                const newReport: ProcessReportItem[] = [];
-                const newPartsBuffer: Part[] = [];
-                const scheduledBuffer: ScheduledPart[] = [];
+        if (file.size === 0) {
+            alert("Файл пустой.");
+            return;
+        }
+        if (file.size > MAX_FILE_SIZE) {
+            alert("Файл слишком большой. Максимальный размер — 10 МБ.");
+            return;
+        }
+        if (!/\.(xlsx|xls)$/i.test(file.name)) {
+            alert("Поддерживаются только файлы Excel .xlsx и .xls.");
+            return;
+        }
 
-                rows.forEach((row, index) => {
-                    // Normalize keys to lowercase for safe access
-                    const r: any = {};
-                    Object.keys(row).forEach(k => r[k.toLowerCase().trim()] = row[k]);
+        const readNumber = (value: unknown, fallback: number): number | null => {
+            if (value === undefined || value === null || String(value).trim() === '') return fallback;
+            if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+            const normalized = String(value).trim().replace(/\s+/g, '').replace(',', '.');
+            if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(normalized)) return null;
+            const parsed = Number(normalized);
+            return Number.isFinite(parsed) ? parsed : null;
+        };
 
-                    const scriptName = r['script'] || r['название скрипта'];
-                    const qty = parseInt(r['qty'] || r['количество'] || '1');
-                    const material = r['material'] || r['материал'] || 'St-3';
-                    const thickness = parseFloat(r['thickness'] || r['толщина'] || '1.0');
+        try {
+            const data = await file.arrayBuffer();
+            const workbook = XLSX.read(data, {
+                type: 'array',
+                cellDates: false,
+                sheetRows: MAX_ROWS + 1
+            });
+            const sheetName = workbook.SheetNames[0];
+            if (!sheetName) {
+                alert("В файле не найден лист с данными.");
+                return;
+            }
 
-                    // Dimensions
-                    const hTop = parseFloat(r['h_top'] || r['высота верх'] || '0');
-                    const hCenter = parseFloat(r['h_center'] || r['высота центр'] || '0');
-                    const hBottom = parseFloat(r['h_bottom'] || r['высота низ'] || '0');
-                    const wLeft = parseFloat(r['w_left'] || r['ширина лево'] || '0');
-                    const wCenter = parseFloat(r['w_center'] || r['ширина центр'] || '0');
-                    const wRight = parseFloat(r['w_right'] || r['ширина право'] || '0');
-                    
-                    // Generic Width/Height overrides if profile specific not found
-                    const genWidth = parseFloat(r['width'] || r['ширина'] || '0');
-                    const genHeight = parseFloat(r['height'] || r['высота'] || '0');
+            const sheet = workbook.Sheets[sheetName];
+            const rangeRef = sheet['!fullref'] || sheet['!ref'];
+            if (!rangeRef) {
+                alert("Первый лист Excel пустой.");
+                return;
+            }
 
-                    if (!scriptName) {
-                        newReport.push({ status: 'error', name: `Row ${index+1}`, qty: 0, message: "Не указано имя скрипта" });
-                        return;
-                    }
+            const range = XLSX.utils.decode_range(rangeRef);
+            const rowCount = range.e.r - range.s.r + 1;
+            const columnCount = range.e.c - range.s.c + 1;
+            if (rowCount > MAX_ROWS + 1) {
+                alert(`В файле больше ${MAX_ROWS} строк данных. Разделите файл на несколько частей.`);
+                return;
+            }
+            if (columnCount > MAX_COLUMNS) {
+                alert(`В файле больше ${MAX_COLUMNS} столбцов. Проверьте структуру таблицы.`);
+                return;
+            }
 
-                    const script = scripts.find(s => s.name.toLowerCase() === scriptName.toLowerCase());
-                    if (!script) {
-                        newReport.push({ status: 'missing_script', name: scriptName, qty, message: "Скрипт не найден в библиотеке" });
-                        return;
-                    }
+            const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+                defval: '',
+                raw: true,
+                blankrows: false
+            });
+            if (rows.length === 0) {
+                alert("На первом листе нет строк для импорта.");
+                return;
+            }
 
-                    // Determine Profile Logic based on script code markers
-                    // Logic copied from ScriptLibraryView for consistency
-                    let profileType: PartProfile['type'] = 'flat';
-                    let orientation: PartProfile['orientation'] = 'vertical';
-                    const code = script.code;
+            const newReport: ProcessReportItem[] = [];
+            const newPartsBuffer: Part[] = [];
+            const scheduledBuffer: ScheduledPart[] = [];
 
-                    if (code.includes('// L-Profile Vertical') || code.includes('L-профиль (vertical)')) {
-                        profileType = 'L'; orientation = 'vertical';
-                    } else if (code.includes('// L-Profile Horizontal') || code.includes('L-профиль (horizontal)')) {
-                        profileType = 'L'; orientation = 'horizontal';
-                    } else if (code.includes('// U-Profile Vertical') || code.includes('U-профиль (vertical)')) {
-                        profileType = 'U'; orientation = 'vertical';
-                    } else if (code.includes('// U-Profile Horizontal') || code.includes('U-профиль (horizontal)')) {
-                        profileType = 'U'; orientation = 'horizontal';
-                    }
-
-                    // Calculate Dimensions and Params
-                    let finalW = genWidth;
-                    let finalH = genHeight;
-                    const params: any = {};
-
-                    if (profileType === 'L') {
-                        if (orientation === 'vertical') {
-                            params.a = wLeft; params.b = wRight || wCenter; // Fallback
-                            finalW = params.a + params.b;
-                            finalH = hCenter || genHeight;
-                        } else {
-                            params.a = hTop; params.b = hBottom || hCenter;
-                            finalH = params.a + params.b;
-                            finalW = wCenter || genWidth;
-                        }
-                    } else if (profileType === 'U') {
-                        if (orientation === 'vertical') {
-                            params.a = wLeft; params.b = wCenter; params.c = wRight;
-                            finalW = params.a + params.b + params.c;
-                            finalH = hCenter || genHeight;
-                        } else {
-                            params.a = hTop; params.b = hCenter; params.c = hBottom;
-                            finalH = params.a + params.b + params.c;
-                            finalW = wCenter || genWidth;
-                        }
-                    } else {
-                        // Flat
-                        if(finalW === 0 && wCenter !== 0) finalW = wCenter;
-                        if(finalH === 0 && hCenter !== 0) finalH = hCenter;
-                    }
-
-                    if (finalW === 0 || finalH === 0) {
-                         newReport.push({ status: 'error', name: scriptName, qty, message: "Нулевые размеры" });
-                         return;
-                    }
-
-                    // Naming convention based on used specific dimensions
-                    // Order: wLeft, wCenter, wRight, hTop, hCenter, hBottom (Width x Height)
-                    const usedDims = [wLeft, wCenter, wRight, hTop, hCenter, hBottom];
-                    // Filter non-zero values, round them, join with 'x'
-                    const dimStr = usedDims.filter(d => d > 0).map(d => Math.round(d)).join('x');
-                    
-                    // Fallback to Total Width x Height
-                    const dimsPart = dimStr || `${Math.round(finalW)}x${Math.round(finalH)}`;
-                    
-                    const partName = `${script.name}_${dimsPart}`;
-                    
-                    // Check Library
-                    let existingPart = parts.find(p => p.name === partName);
-                    
-                    // Also check currently generated buffer to avoid duplicates within the same import batch
-                    if (!existingPart) {
-                        existingPart = newPartsBuffer.find(p => p.name === partName);
-                    }
-
-                    let targetPartId = '';
-
-                    if (existingPart) {
-                        targetPartId = existingPart.id;
-                        newReport.push({ status: 'found', name: partName, qty, message: "Найдено в библиотеке" });
-                    } else {
-                        // Create New
-                        try {
-                            const basePart: Part = {
-                                id: 'temp_base',
-                                name: 'Base',
-                                faceWidth: finalW,
-                                faceHeight: finalH,
-                                geometry: { path: '', width: finalW, height: finalH, entities: [], bbox: {minX:0,minY:0,maxX:finalW,maxY:finalH} },
-                                punches: [],
-                                material: { code: material, thickness: thickness, dieClearance: 0.2 },
-                                nesting: { allow0_180: true, allow90_270: true, initialRotation: 0, commonLine: false, canMirror: false }
-                            };
-                            
-                            const generated = executeParametricScript(basePart, script.code, tools, finalW, finalH, params);
-                            
-                            const newPart: Part = {
-                                ...generated,
-                                id: generateId(),
-                                name: partName,
-                                profile: {
-                                    type: profileType,
-                                    orientation: orientation,
-                                    dims: params
-                                }
-                            };
-                            if (profileType === 'flat') newPart.profile = detectPartProfile(newPart.geometry);
-
-                            newPartsBuffer.push(newPart);
-                            targetPartId = newPart.id;
-                            newReport.push({ status: 'created', name: partName, qty, message: "Сгенерировано по скрипту" });
-
-                        } catch (err: any) {
-                            newReport.push({ status: 'error', name: partName, qty, message: `Ошибка генерации: ${err.message}` });
-                            return;
-                        }
-                    }
-
-                    if (targetPartId) {
-                        scheduledBuffer.push({
-                            partId: targetPartId,
-                            quantity: qty,
-                            nesting: {
-                                allow0_180: true, 
-                                allow90_270: true, 
-                                initialRotation: 0, 
-                                commonLine: false, 
-                                canMirror: false
-                            }
-                        });
-                    }
+            rows.forEach((row, index) => {
+                const rowNumber = index + 2;
+                const r: Record<string, unknown> = {};
+                Object.keys(row).forEach(k => {
+                    r[k.toLowerCase().trim()] = row[k];
                 });
 
-                setReport(newReport);
-                setTempNewParts(newPartsBuffer);
-                setTempScheduled(scheduledBuffer);
-                setIsProcessed(true);
+                const rawScriptName = r['script'] ?? r['название скрипта'];
+                const scriptName = String(rawScriptName ?? '').trim();
+                const qty = readNumber(r['qty'] ?? r['количество'], 1);
+                const materialValue = r['material'] ?? r['материал'];
+                const material = String(materialValue ?? 'St-3').trim() || 'St-3';
+                const thickness = readNumber(r['thickness'] ?? r['толщина'], 1.0);
 
-            } catch (error) {
-                console.error(error);
-                alert("Ошибка чтения файла Excel. Проверьте формат.");
-            }
-        };
-        reader.readAsBinaryString(file);
+                const numericFields: Array<[string, number | null]> = [
+                    ['Количество (Qty)', qty],
+                    ['Толщина (Thickness)', thickness],
+                    ['H_Top', readNumber(r['h_top'] ?? r['высота верх'], 0)],
+                    ['H_Center', readNumber(r['h_center'] ?? r['высота центр'], 0)],
+                    ['H_Bottom', readNumber(r['h_bottom'] ?? r['высота низ'], 0)],
+                    ['W_Left', readNumber(r['w_left'] ?? r['ширина лево'], 0)],
+                    ['W_Center', readNumber(r['w_center'] ?? r['ширина центр'], 0)],
+                    ['W_Right', readNumber(r['w_right'] ?? r['ширина право'], 0)],
+                    ['Width', readNumber(r['width'] ?? r['ширина'], 0)],
+                    ['Height', readNumber(r['height'] ?? r['высота'], 0)]
+                ];
+                const invalidField = numericFields.find(([, value]) => value === null);
+                if (invalidField) {
+                    newReport.push({
+                        status: 'error',
+                        name: scriptName || `Строка ${rowNumber}`,
+                        qty: 0,
+                        message: `Некорректное числовое значение: ${invalidField[0]}`
+                    });
+                    return;
+                }
+
+                const values = Object.fromEntries(numericFields) as Record<string, number>;
+                const rowQty = values['Количество (Qty)'];
+                const rowThickness = values['Толщина (Thickness)'];
+                const hTop = values['H_Top'];
+                const hCenter = values['H_Center'];
+                const hBottom = values['H_Bottom'];
+                const wLeft = values['W_Left'];
+                const wCenter = values['W_Center'];
+                const wRight = values['W_Right'];
+                const genWidth = values['Width'];
+                const genHeight = values['Height'];
+
+                if (!scriptName) {
+                    newReport.push({ status: 'error', name: `Строка ${rowNumber}`, qty: 0, message: "Не указано имя скрипта" });
+                    return;
+                }
+                if (!Number.isInteger(rowQty) || rowQty < 1) {
+                    newReport.push({ status: 'error', name: scriptName, qty: 0, message: "Количество должно быть целым числом больше нуля" });
+                    return;
+                }
+                if (rowThickness <= 0) {
+                    newReport.push({ status: 'error', name: scriptName, qty: rowQty, message: "Толщина должна быть больше нуля" });
+                    return;
+                }
+                if ([hTop, hCenter, hBottom, wLeft, wCenter, wRight, genWidth, genHeight].some(value => value < 0)) {
+                    newReport.push({ status: 'error', name: scriptName, qty: rowQty, message: "Размеры не могут быть отрицательными" });
+                    return;
+                }
+
+                const script = scripts.find(s => s.name.toLowerCase() === scriptName.toLowerCase());
+                if (!script) {
+                    newReport.push({ status: 'missing_script', name: scriptName, qty: rowQty, message: "Скрипт не найден в библиотеке" });
+                    return;
+                }
+
+                let profileType: PartProfile['type'] = 'flat';
+                let orientation: PartProfile['orientation'] = 'vertical';
+                const code = script.code;
+
+                if (code.includes('// L-Profile Vertical') || code.includes('L-профиль (vertical)')) {
+                    profileType = 'L'; orientation = 'vertical';
+                } else if (code.includes('// L-Profile Horizontal') || code.includes('L-профиль (horizontal)')) {
+                    profileType = 'L'; orientation = 'horizontal';
+                } else if (code.includes('// U-Profile Vertical') || code.includes('U-профиль (vertical)')) {
+                    profileType = 'U'; orientation = 'vertical';
+                } else if (code.includes('// U-Profile Horizontal') || code.includes('U-профиль (horizontal)')) {
+                    profileType = 'U'; orientation = 'horizontal';
+                }
+
+                let finalW = genWidth;
+                let finalH = genHeight;
+                const params: Record<string, number> = {};
+
+                if (profileType === 'L') {
+                    if (orientation === 'vertical') {
+                        params.a = wLeft; params.b = wRight || wCenter;
+                        finalW = params.a + params.b;
+                        finalH = hCenter || genHeight;
+                    } else {
+                        params.a = hTop; params.b = hBottom || hCenter;
+                        finalH = params.a + params.b;
+                        finalW = wCenter || genWidth;
+                    }
+                } else if (profileType === 'U') {
+                    if (orientation === 'vertical') {
+                        params.a = wLeft; params.b = wCenter; params.c = wRight;
+                        finalW = params.a + params.b + params.c;
+                        finalH = hCenter || genHeight;
+                    } else {
+                        params.a = hTop; params.b = hCenter; params.c = hBottom;
+                        finalH = params.a + params.b + params.c;
+                        finalW = wCenter || genWidth;
+                    }
+                } else {
+                    if (finalW === 0 && wCenter !== 0) finalW = wCenter;
+                    if (finalH === 0 && hCenter !== 0) finalH = hCenter;
+                }
+
+                if (!Number.isFinite(finalW) || !Number.isFinite(finalH) || finalW <= 0 || finalH <= 0) {
+                    newReport.push({ status: 'error', name: scriptName, qty: rowQty, message: "Итоговые ширина и высота должны быть больше нуля" });
+                    return;
+                }
+
+                const usedDims = [wLeft, wCenter, wRight, hTop, hCenter, hBottom];
+                const dimStr = usedDims.filter(d => d > 0).map(d => Math.round(d)).join('x');
+                const dimsPart = dimStr || `${Math.round(finalW)}x${Math.round(finalH)}`;
+                const partName = `${script.name}_${dimsPart}`;
+
+                let existingPart = parts.find(p => p.name === partName);
+                if (!existingPart) {
+                    existingPart = newPartsBuffer.find(p => p.name === partName);
+                }
+
+                let targetPartId = '';
+                if (existingPart) {
+                    targetPartId = existingPart.id;
+                    newReport.push({ status: 'found', name: partName, qty: rowQty, message: "Найдено в библиотеке" });
+                } else {
+                    try {
+                        const basePart: Part = {
+                            id: 'temp_base',
+                            name: 'Base',
+                            faceWidth: finalW,
+                            faceHeight: finalH,
+                            geometry: { path: '', width: finalW, height: finalH, entities: [], bbox: {minX:0,minY:0,maxX:finalW,maxY:finalH} },
+                            punches: [],
+                            material: { code: material, thickness: rowThickness, dieClearance: 0.2 },
+                            nesting: { allow0_180: true, allow90_270: true, initialRotation: 0, commonLine: false, canMirror: false }
+                        };
+
+                        const generated = executeParametricScript(basePart, script.code, tools, finalW, finalH, params);
+                        const newPart: Part = {
+                            ...generated,
+                            id: generateId(),
+                            name: partName,
+                            profile: {
+                                type: profileType,
+                                orientation: orientation,
+                                dims: params
+                            }
+                        };
+                        if (profileType === 'flat') newPart.profile = detectPartProfile(newPart.geometry);
+
+                        newPartsBuffer.push(newPart);
+                        targetPartId = newPart.id;
+                        newReport.push({ status: 'created', name: partName, qty: rowQty, message: "Сгенерировано по скрипту" });
+                    } catch (err: unknown) {
+                        const message = err instanceof Error ? err.message : String(err);
+                        newReport.push({ status: 'error', name: partName, qty: rowQty, message: `Ошибка генерации: ${message}` });
+                        return;
+                    }
+                }
+
+                if (targetPartId) {
+                    scheduledBuffer.push({
+                        partId: targetPartId,
+                        quantity: rowQty,
+                        nesting: {
+                            allow0_180: true,
+                            allow90_270: true,
+                            initialRotation: 0,
+                            commonLine: false,
+                            canMirror: false
+                        }
+                    });
+                }
+            });
+
+            setReport(newReport);
+            setTempNewParts(newPartsBuffer);
+            setTempScheduled(scheduledBuffer);
+            setIsProcessed(true);
+        } catch (error) {
+            console.error("Ошибка импорта Excel:", error);
+            const message = error instanceof Error ? error.message : String(error);
+            alert(`Не удалось прочитать Excel-файл. Проверьте формат и целостность файла. ${message}`);
+        }
     };
 
     const handleApply = () => {
