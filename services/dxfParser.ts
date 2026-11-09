@@ -39,7 +39,10 @@ export const parseDxf = (dxfContent: string): DxfEntity[] => {
       
       switch(value) {
         case 'LWPOLYLINE':
-          currentEntity = { type: 'LWPOLYLINE', vertices: [], closed: false };
+          currentEntity = { type: 'LWPOLYLINE', vertices: [], closed: false, bulges: [] };
+          break;
+        case 'POLYLINE':
+          currentEntity = { type: 'LWPOLYLINE', vertices: [], closed: false, bulges: [] };
           break;
         case 'CIRCLE':
           currentEntity = { type: 'CIRCLE', center: { x: 0, y: 0 }, radius: 0 };
@@ -51,17 +54,25 @@ export const parseDxf = (dxfContent: string): DxfEntity[] => {
           currentEntity = { type: 'LINE', start: { x: 0, y: 0 }, end: { x: 0, y: 0 } };
           break;
         case 'ENDSEC':
-            currentEntity = null;
+        case 'SEQEND':
+            if (currentEntity && currentEntity.type === 'LWPOLYLINE') {
+                pushCurrentEntity();
+            } else {
+                currentEntity = null;
+            }
             break;
         default:
-          currentEntity = null; // Ignore other entity types
+          if (currentEntity && currentEntity.type === 'LWPOLYLINE' && value === 'VERTEX') {
+             // Continue accumulating vertex for standard POLYLINE
+          } else {
+             currentEntity = null; // Ignore other entity types
+          }
           break;
       }
     }
     
     if (currentEntity) {
         // Parse values based on entity type
-        // Note: parseFloat handles the uppercase string fine if it's numeric
         const floatVal = parseFloat(value);
 
         switch (currentEntity.type) {
@@ -70,7 +81,12 @@ export const parseDxf = (dxfContent: string): DxfEntity[] => {
                     lastLwPolylineX = floatVal;
                  } else if (code === 20 && lastLwPolylineX !== null) { // Y coordinate
                     currentEntity.vertices.push({ x: lastLwPolylineX, y: floatVal });
+                    if (!currentEntity.bulges) currentEntity.bulges = [];
+                    currentEntity.bulges.push(0); // Default zero bulge for this segment
                     lastLwPolylineX = null;
+                 } else if (code === 42 && currentEntity.vertices.length > 0) {
+                    if (!currentEntity.bulges) currentEntity.bulges = [];
+                    currentEntity.bulges[currentEntity.vertices.length - 1] = floatVal;
                  } else if (code === 70) {
                     // Bit code 1 = closed
                     currentEntity.closed = (parseInt(value, 10) & 1) === 1;
@@ -105,6 +121,55 @@ export const parseDxf = (dxfContent: string): DxfEntity[] => {
 
 const degreesToRadians = (degrees: number) => degrees * (Math.PI / 180);
 
+export interface BulgeArcData {
+    radius: number;
+    center: Point;
+    startAngle: number;
+    endAngle: number;
+    largeArcFlag: number;
+    sweepFlag: number;
+}
+
+/**
+ * Converts a 2D line segment with DXF bulge into circular arc parameters.
+ * Bulge = tan(included_angle / 4).
+ * Positive bulge = Counter-Clockwise (curving left).
+ * Negative bulge = Clockwise (curving right).
+ */
+export const bulgeToArc = (p1: Point, p2: Point, bulge: number): BulgeArcData | null => {
+    if (Math.abs(bulge) < 1e-5) return null;
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const chordLen = Math.hypot(dx, dy);
+    if (chordLen < 1e-6) return null;
+
+    const radius = (chordLen * (1 + bulge * bulge)) / (4 * Math.abs(bulge));
+    const mx = (p1.x + p2.x) / 2;
+    const my = (p1.y + p2.y) / 2;
+    const distToCenter = (chordLen * (1 - bulge * bulge)) / (4 * bulge);
+
+    const cx = mx - (dy / chordLen) * distToCenter;
+    const cy = my + (dx / chordLen) * distToCenter;
+
+    let startAngle = (Math.atan2(p1.y - cy, p1.x - cx) * 180) / Math.PI;
+    if (startAngle < 0) startAngle += 360;
+
+    let endAngle = (Math.atan2(p2.y - cy, p2.x - cx) * 180) / Math.PI;
+    if (endAngle < 0) endAngle += 360;
+
+    const largeArcFlag = Math.abs(bulge) > 1 ? 1 : 0;
+    const sweepFlag = bulge > 0 ? 1 : 0;
+
+    return {
+        radius,
+        center: { x: cx, y: cy },
+        startAngle,
+        endAngle,
+        largeArcFlag,
+        sweepFlag
+    };
+};
+
 /**
  * Converts an array of parsed DXF entities into a single SVG path string.
  * Coordinates are normalized to (0,0) at Bottom-Left (Y-Up Cartesian).
@@ -129,12 +194,51 @@ export const dxfEntitiesToSvg = (entities: DxfEntity[]): {
         if (x > maxX) maxX = x;
         if (y < minY) minY = y;
         if (y > maxY) maxY = y;
-    }
+    };
+
+    const updateArcBounds = (center: Point, radius: number, startAngle: number, endAngle: number, isCCW: boolean) => {
+        let s = startAngle;
+        let e = endAngle;
+        if (isCCW && e < s) e += 360;
+        if (!isCCW && s < e) s += 360;
+        
+        for (let deg = 0; deg <= 360; deg += 90) {
+            let inside = false;
+            if (isCCW) {
+                let d = deg;
+                if (d < s) d += 360;
+                inside = (d >= s && d <= e);
+            } else {
+                let d = deg;
+                if (d > s) d -= 360;
+                inside = (d <= s && d >= e);
+            }
+            if (inside) {
+                const rad = degreesToRadians(deg);
+                updateBounds(center.x + radius * Math.cos(rad), center.y + radius * Math.sin(rad));
+            }
+        }
+    };
 
     entities.forEach(entity => {
         switch(entity.type) {
             case 'LWPOLYLINE':
                 entity.vertices.forEach(v => updateBounds(v.x, v.y));
+                // Account for curved segments
+                if (entity.bulges && entity.vertices.length >= 2) {
+                    const count = entity.closed ? entity.vertices.length : entity.vertices.length - 1;
+                    for (let i = 0; i < count; i++) {
+                        const b = entity.bulges[i] || 0;
+                        if (Math.abs(b) > 1e-4) {
+                            const p1 = entity.vertices[i];
+                            const p2 = entity.vertices[(i + 1) % entity.vertices.length];
+                            const arc = bulgeToArc(p1, p2, b);
+                            if (arc) {
+                                updateArcBounds(arc.center, arc.radius, arc.startAngle, arc.endAngle, b > 0);
+                            }
+                        }
+                    }
+                }
                 break;
             case 'LINE':
                 updateBounds(entity.start.x, entity.start.y);
@@ -145,30 +249,11 @@ export const dxfEntitiesToSvg = (entities: DxfEntity[]): {
                 updateBounds(entity.center.x + entity.radius, entity.center.y + entity.radius);
                 break;
             case 'ARC':
-                // Simplified bbox for Arc (using center + radius points)
-                // A precise bbox for arc is complex, we stick to cardinal points + start/end for safety
-                // Or simply checking start/end and circle bounds if contained.
-                // For simplicity in this context, we check start, end, and if quadrants are included.
                 const startRad = degreesToRadians(entity.startAngle);
                 const endRad = degreesToRadians(entity.endAngle);
                 updateBounds(entity.center.x + entity.radius * Math.cos(startRad), entity.center.y + entity.radius * Math.sin(startRad));
                 updateBounds(entity.center.x + entity.radius * Math.cos(endRad), entity.center.y + entity.radius * Math.sin(endRad));
-                
-                // Check cardinal points
-                for (let deg = 0; deg <= 360; deg += 90) {
-                     // Check if deg is within start-end range
-                     // Normalize angles to 0-360 for comparison
-                     let s = entity.startAngle;
-                     let e = entity.endAngle;
-                     if(e < s) e += 360;
-                     let d = deg;
-                     if(d < s) d += 360;
-                     
-                     if (d >= s && d <= e) {
-                         const rRad = degreesToRadians(deg);
-                         updateBounds(entity.center.x + entity.radius * Math.cos(rRad), entity.center.y + entity.radius * Math.sin(rRad));
-                     }
-                }
+                updateArcBounds(entity.center, entity.radius, entity.startAngle, entity.endAngle, true);
                 break;
         }
     });
@@ -206,19 +291,36 @@ export const dxfEntitiesToSvg = (entities: DxfEntity[]): {
 
     normalizedEntities.forEach(entity => {
         switch(entity.type) {
-            case 'LWPOLYLINE':
-                const pathData = entity.vertices
-                    .map((v, i) => `${i === 0 ? 'M' : 'L'} ${v.x.toFixed(3)} ${v.y.toFixed(3)}`)
-                    .join(' ');
-                pathDataParts.push(pathData + (entity.closed ? ' Z' : ''));
+            case 'LWPOLYLINE': {
+                const verts = entity.vertices;
+                if (verts.length === 0) break;
+                let segStr = `M ${verts[0].x.toFixed(3)} ${verts[0].y.toFixed(3)}`;
+                const count = entity.closed ? verts.length : verts.length - 1;
+                for (let i = 0; i < count; i++) {
+                    const p1 = verts[i];
+                    const p2 = verts[(i + 1) % verts.length];
+                    const b = entity.bulges?.[i] || 0;
+                    if (Math.abs(b) > 1e-4) {
+                        const arc = bulgeToArc(p1, p2, b);
+                        if (arc) {
+                            segStr += ` A ${arc.radius.toFixed(3)} ${arc.radius.toFixed(3)} 0 ${arc.largeArcFlag} ${arc.sweepFlag} ${p2.x.toFixed(3)} ${p2.y.toFixed(3)}`;
+                            continue;
+                        }
+                    }
+                    segStr += ` L ${p2.x.toFixed(3)} ${p2.y.toFixed(3)}`;
+                }
+                if (entity.closed && (!entity.bulges || !entity.bulges[count - 1])) {
+                    segStr += ' Z';
+                }
+                pathDataParts.push(segStr);
                 break;
+            }
             case 'LINE':
                 pathDataParts.push(`M ${entity.start.x.toFixed(3)} ${entity.start.y.toFixed(3)} L ${entity.end.x.toFixed(3)} ${entity.end.y.toFixed(3)}`);
                 break;
             case 'CIRCLE':
                 const c = entity.center;
                 const r = entity.radius;
-                // Draw two arcs to form a circle
                 pathDataParts.push(`M ${(c.x - r).toFixed(3)} ${c.y.toFixed(3)} A ${r.toFixed(3)} ${r.toFixed(3)} 0 1 0 ${(c.x + r).toFixed(3)} ${c.y.toFixed(3)}`);
                 pathDataParts.push(`M ${(c.x + r).toFixed(3)} ${c.y.toFixed(3)} A ${r.toFixed(3)} ${r.toFixed(3)} 0 1 0 ${(c.x - r).toFixed(3)} ${c.y.toFixed(3)}`);
                 break;
@@ -252,15 +354,13 @@ export const dxfEntitiesToSvg = (entities: DxfEntity[]): {
     });
     
     const finalPath = pathDataParts.join(' ');
-    
-    // Return Normalized BBox (0,0, W, H)
     const normalizedBbox = { minX: 0, minY: 0, maxX: width, maxY: height };
 
     return { 
         path: finalPath, 
         width, 
         height, 
-        bbox: normalizedBbox,
+        bbox: normalizedBbox, 
         normalizedEntities 
     };
 };

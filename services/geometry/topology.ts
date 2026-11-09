@@ -2,6 +2,7 @@
 import { Point, Part, PartGeometry, PartProfile, Tool, ToolShape } from '../../types';
 import { distanceSq, polygonArea, polygonCenter, normalize } from './math';
 import { segmentIntersectsGeometry } from './intersections';
+import { bulgeToArc } from '../dxfParser';
 
 export type Segment = { 
     p1: Point; p2: Point; type: 'line' | 'arc'; radius?: number; center?: Point; originalEntity?: any; 
@@ -77,11 +78,31 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
             case 'LWPOLYLINE': {
                 if (entity.vertices.length < 2) break;
                 const points = entity.vertices.map(v => normalize(v, bbox));
-                for(let i = 0; i < points.length - 1; i++) {
-                    vertices.push(points[i]); segments.push({ p1: points[i], p2: points[i+1], type: 'line', originalEntity: entity });
+                const bulges = entity.bulges;
+                const count = entity.closed ? points.length : points.length - 1;
+                for(let i = 0; i < count; i++) {
+                    const p1 = points[i];
+                    const p2 = points[(i + 1) % points.length];
+                    const b = bulges?.[i] || 0;
+                    if (Math.abs(b) > 1e-4) {
+                        const arcData = bulgeToArc(p1, p2, b);
+                        if (arcData) {
+                            vertices.push(p1, p2);
+                            segments.push({
+                                p1,
+                                p2,
+                                type: 'arc',
+                                radius: arcData.radius,
+                                center: arcData.center,
+                                originalEntity: entity
+                            });
+                            continue;
+                        }
+                    }
+                    vertices.push(p1);
+                    segments.push({ p1, p2, type: 'line', originalEntity: entity });
                 }
-                vertices.push(points[points.length-1]);
-                if (entity.closed) segments.push({ p1: points[points.length-1], p2: points[0], type: 'line', originalEntity: entity });
+                vertices.push(points[points.length - 1]);
                 break;
             }
             case 'ARC': {

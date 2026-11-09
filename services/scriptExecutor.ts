@@ -27,10 +27,12 @@ export const executeParametricScript = (
     const queue = new DrawQueue();
     const PartBuilder = createPartBuilder(queue, tools);
 
-    // Выполнение
+    // Выполнение в изолированном контексте
     try {
-        const generateFunc = new Function('Part', 'Length', 'Width', 'width', 'height', 'tools', 'Params', scriptCode);
-        generateFunc(PartBuilder, targetWidth, targetHeight, targetWidth, targetHeight, tools, params);
+        const shadowKeys = ['window', 'document', 'localStorage', 'sessionStorage', 'fetch', 'XMLHttpRequest', 'alert', 'confirm', 'prompt'];
+        const shadowVals = shadowKeys.map(() => undefined);
+        const generateFunc = new Function('Part', 'Length', 'Width', 'width', 'height', 'tools', 'Params', ...shadowKeys, scriptCode);
+        generateFunc(PartBuilder, targetWidth, targetHeight, targetWidth, targetHeight, tools, params, ...shadowVals);
     } catch (err) {
         handleScriptError(err, basePart.name);
     }

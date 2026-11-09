@@ -41,7 +41,7 @@ export interface NestingSettings {
   nestAsRectangle: boolean;
   
   // New Advanced Settings
-  algorithm?: 'rectangle-basic' | 'complex-basic' | 'complex-fast' | 'bottom-left' | 'hybrid';
+  algorithm?: 'rectangle-basic' | 'rectangle-guillotine' | 'complex-basic' | 'complex-fast' | 'bottom-left' | 'hybrid';
   sortStrategy?: 'area-descending' | 'perimeter-descending' | 'aspect-ratio' | 'hybrid-score' | 'genetic-optimized';
 }
 

@@ -23,9 +23,20 @@ export interface RawPunch {
 export class DrawQueue {
     public ops: DrawOp[] = [];
     public rawPunches: RawPunch[] = [];
+    private readonly MAX_OPS = 25000;
 
-    addOp(op: DrawOp) { this.ops.push(op); }
-    addPunch(p: RawPunch) { this.rawPunches.push(p); }
+    addOp(op: DrawOp) { 
+        if (this.ops.length >= this.MAX_OPS) {
+            throw new Error(`Превышен лимит геометрических операций (${this.MAX_OPS}). Проверьте скрипт на бесконечный цикл.`);
+        }
+        this.ops.push(op); 
+    }
+    addPunch(p: RawPunch) { 
+        if (this.rawPunches.length >= this.MAX_OPS) {
+            throw new Error(`Превышен лимит пробивок (${this.MAX_OPS}). Проверьте скрипт на бесконечный цикл.`);
+        }
+        this.rawPunches.push(p); 
+    }
 
     /**
      * Вычисляет границы и возвращает данные для сборки Part

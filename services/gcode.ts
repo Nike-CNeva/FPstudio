@@ -28,23 +28,48 @@ interface WorkUnit {
 }
 
 /**
- * Checks if a line segment (p1 -> p2) intersects with a protected clamp zone.
+ * Calculates effective bounding half-extents (X and Y) of a punch tool given its rotation.
+ */
+export const getToolSafetyEnvelope = (tool?: Tool, angleDeg: number = 0): { halfX: number, halfY: number } => {
+    if (!tool) return { halfX: 0, halfY: 0 };
+    const w = tool.width || 0;
+    const h = tool.height || w || 0;
+    if (tool.shape === ToolShape.Circle) {
+        const r = (w || h) / 2;
+        return { halfX: r, halfY: r };
+    }
+    const rad = (angleDeg * Math.PI) / 180;
+    const cos = Math.abs(Math.cos(rad));
+    const sin = Math.abs(Math.sin(rad));
+    return {
+        halfX: (w / 2) * cos + (h / 2) * sin,
+        halfY: (w / 2) * sin + (h / 2) * cos
+    };
+};
+
+/**
+ * Checks if a line segment (p1 -> p2) with physical tool envelope intersects with a protected clamp zone.
  */
 const isPathSafe = (
     x1: number, y1: number, 
     x2: number, y2: number, 
     clamps: number[], 
     zoneX: number, 
-    deadZoneY: number
+    deadZoneY: number,
+    tool?: Tool,
+    toolAngle: number = 0
 ): boolean => {
-    if (y1 > deadZoneY && y2 > deadZoneY) return true;
+    const { halfX, halfY } = getToolSafetyEnvelope(tool, toolAngle);
+    const effectiveDeadZoneY = deadZoneY + halfY;
+    if (y1 > effectiveDeadZoneY && y2 > effectiveDeadZoneY) return true;
 
-    const minX = Math.min(x1, x2);
-    const maxX = Math.max(x1, x2);
+    const minX = Math.min(x1, x2) - halfX;
+    const maxX = Math.max(x1, x2) + halfX;
+    const effectiveZoneX = zoneX + halfX;
 
     for (const clampX of clamps) {
-        const clampMin = clampX - zoneX;
-        const clampMax = clampX + zoneX;
+        const clampMin = clampX - effectiveZoneX;
+        const clampMax = clampX + effectiveZoneX;
         const xOverlap = Math.max(0, Math.min(maxX, clampMax) - Math.max(minX, clampMin));
         if (xOverlap > 0) return false;
     }
@@ -459,8 +484,12 @@ export const calculateOptimizedPath = (
             if (punchRot < 0) punchRot += 360;
 
             const tool = tools.find(t => t.id === punch.toolId);
-            let toolT = tool?.stationNumber || 0;
-            if (tool?.mtIndex) toolT = 20 + tool.mtIndex;
+            let toolT: string | number = tool?.stationNumber || 0;
+            if (tool?.mtIndex !== undefined && tool.mtIndex > 0) {
+                const st = tool.stationNumber || 1;
+                const sub = tool.mtIndex.toString().padStart(2, '0');
+                toolT = `${st}.${sub}`;
+            }
 
             return {
                 type: 'single',
@@ -577,12 +606,12 @@ export const generateGCode = (
 
     // Tool List
     gcode += `(*** TOOL LIST ***)\n`;
-    const usedToolsMap = new Map<string, number>();
+    const usedToolsMap = new Map<string, string | number>();
     ops.forEach(op => {
-        if(op.toolT && !usedToolsMap.has(op.toolId)) usedToolsMap.set(op.toolId, op.toolT);
+        if(op.toolT !== undefined && !usedToolsMap.has(op.toolId)) usedToolsMap.set(op.toolId, op.toolT);
     });
     
-    const toolsInHeader = Array.from(usedToolsMap.entries()).sort((a,b) => a[1] - b[1]);
+    const toolsInHeader = Array.from(usedToolsMap.entries()).sort((a,b) => String(a[1]).localeCompare(String(b[1]), undefined, { numeric: true }));
     
     toolsInHeader.forEach(([tid, code]) => {
         const tool = tools.find(t => t.id === tid);
@@ -595,7 +624,10 @@ export const generateGCode = (
     gcode += `G90 G21\n`;
     gcode += `G159 X${sheet.width} Y${sheet.height} T${sheet.thickness} V1\n`;
     gcode += `N908 G189 A${clampPositions[0]||0} B${clampPositions[1]||0} C${clampPositions[2]||0}\n`;
-    gcode += `G54 F90000\n`;
+    
+    const slew = machineSettings?.maxSlewSpeed ? machineSettings.maxSlewSpeed * 1000 : 30000;
+    const safeFeed = Math.min(Math.max(slew, 10000), 60000);
+    gcode += `G54 F${safeFeed}\n`;
 
     let nLine = 1;
     let lastX = 0; 
@@ -618,11 +650,14 @@ export const generateGCode = (
         const op = ops[i];
         const tool = tools.find(t => t.id === op.toolId);
         
-        const isUnsafeMove = !isPathSafe(lastX, lastY, op.x, op.y, clampPositions, limits.clampProtectionZoneX, limits.deadZoneY);
+        const isUnsafeMove = !isPathSafe(lastX, lastY, op.x, op.y, clampPositions, limits.clampProtectionZoneX, limits.deadZoneY, tool, op.rotation);
         
+        const env = getToolSafetyEnvelope(tool, op.rotation);
+        const dynamicSafeY = Math.max(SAFE_Y, limits.deadZoneY + limits.clampProtectionZoneY + env.halfY + 10);
+
         if (isUnsafeMove) {
-            gcode += `(SAFETY MOVE)\n`;
-            if (lastY < SAFE_Y) gcode += `G70 Y${SAFE_Y.toFixed(2)}\n`;
+            gcode += `(SAFETY MOVE - CLAMP ZONE RETRACT)\n`;
+            if (lastY < dynamicSafeY) gcode += `G70 Y${dynamicSafeY.toFixed(2)}\n`;
             gcode += `G70 X${op.x.toFixed(2)}\n`;
             gcode += `G70 Y${op.y.toFixed(2)}\n`;
         }

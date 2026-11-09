@@ -19,7 +19,7 @@ export interface OptimizerSettings {
 
 export interface PunchOp {
     type?: 'single' | 'move'; // 'move' for explicit rapid, 'single' for hit
-    toolT?: number;
+    toolT?: number | string;
     toolId: string;
     x: number;
     y: number;
