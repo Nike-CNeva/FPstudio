@@ -45,13 +45,6 @@ export const AutoPunchSettingsModal: React.FC<AutoPunchSettingsModalProps> = ({ 
         microJointType: 'auto',
         microJointLength: 1.5,
         microJointDistance: 0,
-
-        checkInwardGouge: true,
-        maxInwardGougeTolerance: 0.05,
-        checkOverhang: true,
-        maxAllowedOverhang: 20,
-        checkLooseSlugs: true,
-        minSlugWidth: 1.0,
     });
 
     const handleUpdate = (updates: Partial<AutoPunchSettings>) => {
@@ -85,12 +78,6 @@ export const AutoPunchSettingsModal: React.FC<AutoPunchSettingsModalProps> = ({ 
                         extension={settings.extension}
                         scallopHeight={settings.scallopHeight}
                         vertexTolerance={settings.vertexTolerance}
-                        checkInwardGouge={settings.checkInwardGouge}
-                        maxInwardGougeTolerance={settings.maxInwardGougeTolerance}
-                        checkOverhang={settings.checkOverhang}
-                        maxAllowedOverhang={settings.maxAllowedOverhang}
-                        checkLooseSlugs={settings.checkLooseSlugs}
-                        minSlugWidth={settings.minSlugWidth}
                         onUpdate={handleUpdate}
                     />
 

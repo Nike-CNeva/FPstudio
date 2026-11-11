@@ -7,7 +7,7 @@ import { getGeometryFromEntities, getOuterLoopIndices } from '../geometry';
 import { findTeachCycleMatches } from '../teachLogic';
 import { TOLERANCE, getPointKey } from '../punchingUtils';
 import { generateId } from '../../utils/helpers';
-import { detectAndPunchShapes, detectLoopTools, detectSpecialFeatureTools } from '../punchingGenerators';
+import { detectAndPunchShapes, detectLoopTools } from '../punchingGenerators';
 import { getVectorFromVertex } from './contourUtils';
 import { processLineSegment } from './contourLineHandler';
 import { processArcSegment } from './contourArcHandler';
@@ -73,7 +73,6 @@ export const generateContourPunches = (
 
     punches.push(...detectAndPunchShapes(geometry, processed, availableTools, settings, coveredIndices));
     punches.push(...detectLoopTools(processed, availableTools, settings, coveredIndices));
-    punches.push(...detectSpecialFeatureTools(geometry, processed, availableTools, settings, coveredIndices));
 
     processed.segments.forEach((seg, idx) => {
         if (coveredIndices.has(idx)) return;

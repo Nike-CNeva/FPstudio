@@ -7,7 +7,6 @@ import { ModalInputField } from './common/InputField';
 import { getPunchTypeName } from '../utils/helpers';
 import { ToolPreview } from './common/ToolDisplay';
 import { parseDxf, dxfEntitiesToSvg } from '../services/dxfParser';
-import { parseCpSpecialTool } from '../services/cpParser';
 
 const createNewTool = (): Omit<Tool, 'id'> => ({
   name: 'Новый инструмент',
@@ -38,11 +37,7 @@ const createNewTool = (): Omit<Tool, 'id'> => ({
   onlyForC5: false,
   stationNumber: 0,
   stationType: 'B',
-  mtIndex: 0,
-  maxOverhang: 20,
-  maxInwardGouge: 0.05,
-  minSlugWidth: 1.0,
-  preventLooseSlugs: true
+  mtIndex: 0
 });
 
 const ToolForm: React.FC<{
@@ -93,54 +88,38 @@ const ToolForm: React.FC<{
         onSave(formData as Tool);
     };
 
-    const handleSpecialToolUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const handleDxfUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (!file) return;
 
-        const fileName = file.name;
-        const isCp = fileName.toLowerCase().endsWith('.cp');
         const reader = new FileReader();
-
         reader.onload = (e) => {
             const content = e.target?.result as string;
             try {
-                if (isCp) {
-                    const parsedTool = parseCpSpecialTool(content, fileName);
-                    if (!parsedTool || !parsedTool.customPath || parsedTool.width === 0 || parsedTool.height === 0) {
-                        alert("Ошибка: Не удалось распознать геометрию специнструмента в CP файле.");
+                const parsedEntities = parseDxf(content);
+                if (parsedEntities.length > 0) {
+                    // Convert to SVG to get bounding box and path
+                    const { path, width, height } = dxfEntitiesToSvg(parsedEntities);
+                    
+                    if (width === 0 || height === 0) {
+                        alert("Ошибка: Пустой или некорректный DXF файл.");
                         return;
                     }
+
+                    // Auto-fill width, height and path
                     setFormData(prev => ({
                         ...prev,
-                        name: parsedTool.name || prev.name,
-                        width: parsedTool.width!,
-                        height: parsedTool.height!,
-                        customPath: parsedTool.customPath,
-                        toolSize: parsedTool.toolSize || prev.toolSize,
-                        shape: ToolShape.Special
+                        width: parseFloat(width.toFixed(3)),
+                        height: parseFloat(height.toFixed(3)),
+                        customPath: path,
+                        shape: ToolShape.Special // Ensure special type is set
                     }));
                 } else {
-                    const parsedEntities = parseDxf(content);
-                    if (parsedEntities.length > 0) {
-                        const { path, width, height } = dxfEntitiesToSvg(parsedEntities);
-                        if (width === 0 || height === 0) {
-                            alert("Ошибка: Пустой или некорректный DXF файл.");
-                            return;
-                        }
-                        setFormData(prev => ({
-                            ...prev,
-                            width: parseFloat(width.toFixed(3)),
-                            height: parseFloat(height.toFixed(3)),
-                            customPath: path,
-                            shape: ToolShape.Special
-                        }));
-                    } else {
-                        alert("Не удалось найти геометрию в DXF файле.");
-                    }
+                    alert("Не удалось найти геометрию в DXF файле.");
                 }
             } catch (error) {
-                console.error("Special Tool Parse Error:", error);
-                alert("Ошибка при чтении файла инструмента.");
+                console.error("DXF Parse Error:", error);
+                alert("Ошибка при чтении DXF файла.");
             }
         };
         reader.readAsText(file);
@@ -170,23 +149,16 @@ const ToolForm: React.FC<{
                         
                         {isSpecial ? (
                             <div className="col-span-2 p-3 bg-gray-800 rounded border border-dashed border-gray-500 flex flex-col items-center">
-                                <p className="text-xs text-gray-400 mb-2">Загрузите DXF или CP контур специального инструмента для авто-расчета размеров.</p>
-                                <div className="flex gap-2">
-                                    <button 
-                                        type="button"
-                                        onClick={() => fileInputRef.current?.click()} 
-                                        className="px-4 py-2 bg-purple-700 hover:bg-purple-600 rounded text-sm text-white flex items-center space-x-2 cursor-pointer shadow"
-                                    >
-                                        <FolderIcon className="w-4 h-4"/>
-                                        <span>Загрузить контур (.dxf / .cp)</span>
-                                    </button>
-                                </div>
-                                <input type="file" ref={fileInputRef} onChange={handleSpecialToolUpload} accept=".dxf,.cp" className="hidden" />
-                                {formData.customPath && (
-                                    <span className="text-green-400 text-xs mt-2 font-medium flex items-center gap-1">
-                                        ✓ Контур специнструмента загружен ({formData.width} × {formData.height} мм)
-                                    </span>
-                                )}
+                                <p className="text-xs text-gray-400 mb-2">Загрузите DXF контур инструмента для авто-расчета размеров.</p>
+                                <button 
+                                    onClick={() => fileInputRef.current?.click()} 
+                                    className="px-4 py-2 bg-purple-700 hover:bg-purple-600 rounded text-sm text-white flex items-center space-x-2"
+                                >
+                                    <FolderIcon className="w-4 h-4"/>
+                                    <span>Загрузить DXF (.dxf)</span>
+                                </button>
+                                <input type="file" ref={fileInputRef} onChange={handleDxfUpload} accept=".dxf" className="hidden" />
+                                {formData.customPath && <span className="text-green-400 text-xs mt-2">Контур загружен!</span>}
                             </div>
                         ) : null}
 
@@ -219,59 +191,20 @@ const ToolForm: React.FC<{
                     </div>
                 </fieldset>
                 
-                 {/* Turret Setup */}
-                 <fieldset className="border border-gray-600 p-3 rounded-md">
-                     <legend className="px-2 font-semibold text-gray-300">Настройка Револьвера</legend>
-                     <div className="grid grid-cols-2 gap-4">
-                          <ModalInputField label="Номер станции (0=авто)" type="number" value={formData.stationNumber || 0} onChange={e => handleFormChange('stationNumber', parseInt(e.target.value) || 0)} />
-                          <ModalInputField label="MT Index (для Multi-Tool)" type="number" value={formData.mtIndex || 0} onChange={e => handleFormChange('mtIndex', parseInt(e.target.value) || 0)} />
-                          <div className="flex items-center mt-6">
-                             <label className="flex items-center space-x-2 cursor-pointer">
-                                 <input type="checkbox" checked={formData.isAutoIndex} onChange={e => handleFormChange('isAutoIndex', e.target.checked)} className="form-checkbox h-4 w-4 text-blue-600 bg-gray-800 border-gray-500" />
-                                 <span>Auto Index</span>
-                             </label>
-                          </div>
-                     </div>
-                 </fieldset>
-
-                 {/* Технологический контроль контура и отходов */}
-                 <fieldset className="border border-cyan-800/80 bg-gray-800/30 p-3 rounded-md space-y-3">
-                     <legend className="px-2 font-semibold text-cyan-400">Технологический контроль контура и полостей</legend>
-                     <div className="grid grid-cols-2 gap-4">
-                          <ModalInputField 
-                              label="Допуск зарезания внутрь (мм)" 
-                              type="number" 
-                              value={formData.maxInwardGouge ?? 0.05} 
-                              onChange={e => handleFormChange('maxInwardGouge', parseFloat(e.target.value) || 0)} 
-                              placeholder="0.05"
-                          />
-                          <ModalInputField 
-                              label="Макс. выступ наружу (мм)" 
-                              type="number" 
-                              value={formData.maxOverhang ?? 20} 
-                              onChange={e => handleFormChange('maxOverhang', parseFloat(e.target.value) || 0)} 
-                              placeholder="20"
-                          />
-                          <ModalInputField 
-                              label="Мин. ширина отхода/перемычки (мм)" 
-                              type="number" 
-                              value={formData.minSlugWidth ?? 1.0} 
-                              onChange={e => handleFormChange('minSlugWidth', parseFloat(e.target.value) || 0)} 
-                              placeholder="1.0"
-                          />
-                          <div className="flex items-center mt-6">
-                             <label className="flex items-center space-x-2 cursor-pointer">
-                                 <input 
-                                     type="checkbox" 
-                                     checked={formData.preventLooseSlugs !== false} 
-                                     onChange={e => handleFormChange('preventLooseSlugs', e.target.checked)} 
-                                     className="form-checkbox h-4 w-4 text-blue-600 bg-gray-800 border-gray-500 rounded" 
-                                 />
-                                 <span className="text-xs text-gray-200 font-medium">Защита от выпадающих полостей (Slugs)</span>
-                             </label>
-                          </div>
-                     </div>
-                 </fieldset>
+                {/* Turret Setup */}
+                <fieldset className="border border-gray-600 p-3 rounded-md">
+                    <legend className="px-2 font-semibold text-gray-300">Настройка Револьвера</legend>
+                    <div className="grid grid-cols-2 gap-4">
+                         <ModalInputField label="Номер станции (0=авто)" type="number" value={formData.stationNumber || 0} onChange={e => handleFormChange('stationNumber', parseInt(e.target.value) || 0)} />
+                         <ModalInputField label="MT Index (для Multi-Tool)" type="number" value={formData.mtIndex || 0} onChange={e => handleFormChange('mtIndex', parseInt(e.target.value) || 0)} />
+                         <div className="flex items-center mt-6">
+                            <label className="flex items-center space-x-2 cursor-pointer">
+                                <input type="checkbox" checked={formData.isAutoIndex} onChange={e => handleFormChange('isAutoIndex', e.target.checked)} className="form-checkbox h-4 w-4 text-blue-600 bg-gray-800 border-gray-500" />
+                                <span>Auto Index</span>
+                            </label>
+                         </div>
+                    </div>
+                </fieldset>
 
                  <fieldset className="border border-gray-600 p-3 rounded-md">
                     <legend className="px-2 font-semibold text-gray-300">Матрицы</legend>

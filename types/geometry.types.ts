@@ -15,14 +15,12 @@ export interface DxfLwPolyline {
   vertices: Point[];
   closed: boolean;
   bulges?: number[];
-  contourType?: 'outer' | 'inner';
 }
 
 export interface DxfCircle {
   type: 'CIRCLE';
   center: Point;
   radius: number;
-  contourType?: 'outer' | 'inner';
 }
 
 export interface DxfArc {
@@ -31,14 +29,12 @@ export interface DxfArc {
   radius: number;
   startAngle: number;
   endAngle: number;
-  contourType?: 'outer' | 'inner';
 }
 
 export interface DxfLine {
   type: 'LINE';
   start: Point;
   end: Point;
-  contourType?: 'outer' | 'inner';
 }
 
 export type DxfEntity = DxfLwPolyline | DxfCircle | DxfArc | DxfLine;

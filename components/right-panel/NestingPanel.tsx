@@ -144,7 +144,7 @@ export const NestingPanel: React.FC<NestingPanelProps> = ({
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1 custom-scrollbar">
                     {getPartsOnSheet(activeSheetIndex).map((p, i) => (
-                        <div key={`${p.name}_${i}`} className="flex justify-between items-center bg-gray-800 p-2 rounded text-xs border border-gray-700 hover:bg-gray-700 transition-colors">
+                        <div key={i} className="flex justify-between items-center bg-gray-800 p-2 rounded text-xs border border-gray-700 hover:bg-gray-700 transition-colors">
                             <span className="text-gray-300 truncate mr-2" title={p.name}>{p.name}</span>
                             <span className="font-mono font-bold text-blue-400">{p.count} шт</span>
                         </div>

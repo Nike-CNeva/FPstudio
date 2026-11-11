@@ -6,7 +6,6 @@ import { bulgeToArc } from '../dxfParser';
 
 export type Segment = { 
     p1: Point; p2: Point; type: 'line' | 'arc'; radius?: number; center?: Point; originalEntity?: any; 
-    contourType?: 'outer' | 'inner';
 };
 
 export type ProcessedGeometry = { 
@@ -70,11 +69,10 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
     if (!entities || !bbox) return null;
     const vertices: Point[] = []; const segments: Segment[] = [];
     entities.forEach(entity => {
-        const cType = entity.contourType;
         switch(entity.type) {
             case 'LINE': {
                 const p1 = normalize(entity.start, bbox); const p2 = normalize(entity.end, bbox);
-                vertices.push(p1, p2); segments.push({ p1, p2, type: 'line', originalEntity: entity, contourType: cType });
+                vertices.push(p1, p2); segments.push({ p1, p2, type: 'line', originalEntity: entity });
                 break;
             }
             case 'LWPOLYLINE': {
@@ -96,14 +94,13 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
                                 type: 'arc',
                                 radius: arcData.radius,
                                 center: arcData.center,
-                                originalEntity: entity,
-                                contourType: cType
+                                originalEntity: entity
                             });
                             continue;
                         }
                     }
                     vertices.push(p1);
-                    segments.push({ p1, p2, type: 'line', originalEntity: entity, contourType: cType });
+                    segments.push({ p1, p2, type: 'line', originalEntity: entity });
                 }
                 vertices.push(points[points.length - 1]);
                 break;
@@ -113,19 +110,18 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
                 const p1 = normalize({ x: entity.center.x + entity.radius * Math.cos(startRad), y: entity.center.y + entity.radius * Math.sin(startRad) }, bbox);
                 const p2 = normalize({ x: entity.center.x + entity.radius * Math.cos(endRad), y: entity.center.y + entity.radius * Math.sin(endRad) }, bbox);
                 const center = normalize(entity.center, bbox);
-                vertices.push(p1, p2); segments.push({ p1, p2, type: 'arc', radius: entity.radius, center, originalEntity: entity, contourType: cType });
+                vertices.push(p1, p2); segments.push({ p1, p2, type: 'arc', radius: entity.radius, center, originalEntity: entity });
                 break;
             }
             case 'CIRCLE': {
                 const r = entity.radius; const c = entity.center; const center = normalize(c, bbox);
                 const points = [{x: c.x + r, y: c.y}, {x: c.x, y: c.y + r}, {x: c.x - r, y: c.y}, {x: c.x, y: c.y - r}].map(p => normalize(p, bbox));
                 vertices.push(...points);
-                for (let i = 0; i < points.length; i++) segments.push({p1: points[i], p2: points[(i+1) % 4], type: 'arc', radius: r, center, originalEntity: entity, contourType: cType || 'inner' });
+                for (let i = 0; i < points.length; i++) segments.push({p1: points[i], p2: points[(i+1) % 4], type: 'arc', radius: r, center, originalEntity: entity });
                 break;
             }
         }
     });
-
     const shapeCenters: { point: Point, rotation?: number }[] = [];
     entities.forEach(e => { if (e.type === 'CIRCLE') shapeCenters.push({ point: normalize(e.center, bbox), rotation: 0 }); });
     const detectedLoops = findClosedLoops(segments);
@@ -134,17 +130,7 @@ export const getGeometryFromEntities = (part: Part): ProcessedGeometry | null =>
         const area = polygonArea(loop.vertices);
         if (area > maxArea) { maxArea = area; mainLoopIndex = idx; }
     });
-
-    // Если у сегментов не был задан явно contourType (например из DXF),
-    // наибольший замкнутый цикл является наружным (outer), остальные внутренними (inner)
     detectedLoops.forEach((loop, idx) => {
-        const loopType: 'outer' | 'inner' = (idx === mainLoopIndex) ? 'outer' : 'inner';
-        loop.segmentIndices.forEach(sIdx => {
-            if (!segments[sIdx].contourType) {
-                segments[sIdx].contourType = loopType;
-            }
-        });
-
         if (idx !== mainLoopIndex) {
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
             loop.vertices.forEach(v => {

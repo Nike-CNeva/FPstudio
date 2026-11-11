@@ -3,7 +3,7 @@
  * ОТВЕТСТВЕННОСТЬ: Генерация ударов для ARC сегментов.
  */
 import { Tool, PlacedTool, ToolShape, PartGeometry, AutoPunchSettings } from '../../types';
-import { isPointInsideContour, Segment, isToolGouging, validateToolPunchIntegrity } from '../geometry';
+import { isPointInsideContour, Segment, isToolGouging } from '../geometry';
 import { denormalizePoint, calculateScallopStep, getHitKey, getPointKey } from '../punchingUtils';
 import { getPreferredTools } from '../punchingTools';
 
@@ -40,15 +40,7 @@ export const processArcSegment = (
     if (nibbleCandidates.length === 0) return; 
     
     const tool = nibbleCandidates[0];
-    
-    // Для наружного контура (метка 8) инструмент выставляется снаружи материала:
-    // если материал снаружи дуги (выпуклая деталь), пуансон идет по внутреннему радиусу (r - tool/2);
-    // если материал внутри дуги, пуансон идет снаружи (r + tool/2).
-    // Для внутреннего контура (метка 9) инструмент идет со стороны полости.
-    let punchR = isProbeInMaterial ? (r - tool.width/2) : (r + tool.width/2);
-    if (seg.contourType === 'inner') {
-        punchR = isProbeInMaterial ? (r - tool.width/2) : (r + tool.width/2);
-    }
+    const punchR = isProbeInMaterial ? (r - tool.width/2) : (r + tool.width/2);
     if (punchR <= 0) return; 
 
     let aDiff = Math.abs(diff);
@@ -70,7 +62,6 @@ export const processArcSegment = (
     for(let i=0; i <= (isClosed ? steps - 1 : steps); i++) {
         const a = aAng1 + i * rStep;
         let px = center.x + punchR * Math.cos(a), py = center.y + punchR * Math.sin(a);
-        const check = validateToolPunchIntegrity(tool, px, py, 0, geometry, geometry.bbox, seg, allSegments, settings);
-        if (check.isValid) punches.push({ toolId: tool.id, x: px, y: py, rotation: 0 });
+        if (!isToolGouging(tool, px, py, 0, geometry, geometry.bbox, seg, allSegments)) punches.push({ toolId: tool.id, x: px, y: py, rotation: 0 });
     }
 };

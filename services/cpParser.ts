@@ -67,182 +67,62 @@ const findOrCreateTool = (name: string, library: Tool[]): Tool => {
 };
 
 /**
- * Парсер файла CP специального инструмента (DRAWING / PART_SIZE).
- * Извлекает контур инструмента, строит SVG path (центрированный вокруг 0,0 или нормализованный),
- * считывает габариты PART_SIZE или рассчитывает по точкам.
- */
-export const parseCpSpecialTool = (content: string, fileName: string): Partial<Tool> | null => {
-    const lines = content.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-    if (lines.length === 0) return null;
-
-    let toolName = fileName.replace(/\.(cp|CP)$/, '');
-    if (lines[0].toUpperCase() === 'DRAWING' && lines.length > 1) {
-        const potentialName = lines[1].split(/\s+/)[0];
-        if (potentialName && !potentialName.startsWith('ALT') && !potentialName.startsWith('0')) {
-            toolName = potentialName;
-        }
-    }
-
-    const geometryPoints: { x: number; y: number; flag: number }[] = [];
-    let partSizeW: number | null = null;
-    let partSizeH: number | null = null;
-
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.startsWith('PART_SIZE')) {
-            const parts = line.split(/\s+/);
-            if (parts.length >= 3) {
-                const w = parseFloat(parts[1]);
-                const h = parseFloat(parts[2]);
-                if (!isNaN(w) && !isNaN(h)) {
-                    partSizeW = w;
-                    partSizeH = h;
-                }
-            }
-            continue;
-        }
-
-        const parts = line.split(/\s+/);
-        if (parts.length >= 3) {
-            const x = parseFloat(parts[0]);
-            const y = parseFloat(parts[1]);
-            const flag = parseInt(parts[2]);
-
-            if (flag === 99) break;
-
-            if (!isNaN(x) && !isNaN(y) && !isNaN(flag)) {
-                geometryPoints.push({ x, y, flag });
-                if (flag !== -1) {
-                    if (x < minX) minX = x;
-                    if (x > maxX) maxX = x;
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
-                }
-            }
-        }
-    }
-
-    if (geometryPoints.length === 0 || minX === Infinity) return null;
-
-    const width = partSizeW ?? (maxX - minX);
-    const height = partSizeH ?? (maxY - minY);
-
-    // Нормализация координат от 0 до width / height
-    const normalize = (x: number, y: number) => ({
-        x: x - minX,
-        y: y - minY
-    });
-
-    let svgPath = '';
-
-    for (let i = 0; i < geometryPoints.length; i++) {
-        const pt = geometryPoints[i];
-        const n = normalize(pt.x, pt.y);
-        const prevRaw = i > 0 ? geometryPoints[i - 1] : null;
-
-        if (pt.flag === 8 || pt.flag === 9) {
-            svgPath += `M ${n.x.toFixed(3)} ${n.y.toFixed(3)} `;
-        } else if (pt.flag === 0) {
-            if (prevRaw && prevRaw.flag !== 1 && prevRaw.flag !== -1) {
-                svgPath += `L ${n.x.toFixed(3)} ${n.y.toFixed(3)} `;
-            }
-        } else if (pt.flag === 1 || pt.flag === -1) {
-            // Флаг 1  = центр дуги по часовой стрелке (CW, forcedIsCCW = false)
-            // Флаг -1 = центр дуги против часовой стрелки (CCW, forcedIsCCW = true)
-            if (i > 0 && i + 1 < geometryPoints.length) {
-                const startRaw = geometryPoints[i - 1];
-                const centerRaw = pt;
-                const endRaw = geometryPoints[i + 1];
-
-                let prevRawForTan = startRaw;
-                if (i > 1 && geometryPoints[i - 1].flag === 0) {
-                    prevRawForTan = geometryPoints[i - 2];
-                }
-
-                const isCCW = pt.flag === -1; // 1 -> false (CW), -1 -> true (CCW)
-                const { largeArc, sweep, radius } = calculateArcParams(prevRawForTan, startRaw, centerRaw, endRaw, isCCW);
-                const endN = normalize(endRaw.x, endRaw.y);
-
-                svgPath += `A ${radius.toFixed(3)} ${radius.toFixed(3)} 0 ${largeArc} ${sweep} ${endN.x.toFixed(3)} ${endN.y.toFixed(3)} `;
-            }
-        }
-    }
-
-    svgPath += 'Z';
-
-    return {
-        name: toolName,
-        shape: ToolShape.Special,
-        width: parseFloat(width.toFixed(3)),
-        height: parseFloat(height.toFixed(3)),
-        customPath: svgPath,
-        toolSize: width > 50 || height > 50 ? 'D' : (width > 30 || height > 30 ? 'C' : 'B'),
-        description: `Специнструмент ${toolName} из файла CP`,
-        maxOverhang: 20,
-        maxInwardGouge: 0.05,
-        minSlugWidth: 1.0,
-        preventLooseSlugs: true
-    };
-};
-
-/**
- * Определяет параметры SVG дуги (Large Arc, Sweep) и углы.
- * В формате CP:
- *   флаг 1  = центр дуги по часовой стрелке (CW, Sweep = 0 в стандартной декартовой Y-up системе)
- *   флаг -1 = центр дуги против часовой стрелки (CCW, Sweep = 1 в стандартной декартовой Y-up системе)
+ * Determines SVG Arc parameters (Large Arc, Sweep).
+ * Handles direction detection (CW vs CCW) correctly based on contour winding.
  */
 const calculateArcParams = (
     prev: Point | null, 
     start: Point, 
     center: Point, 
-    end: Point,
-    forcedIsCCW?: boolean
+    end: Point
 ): { largeArc: number, sweep: number, radius: number, isCCW: boolean } => {
     
-    // Средний радиус для устранения погрешностей округления центра в CP файле
+    // Average radius to mitigate center point precision errors in CP files
     const r1 = Math.sqrt(Math.pow(start.x - center.x, 2) + Math.pow(start.y - center.y, 2));
     const r2 = Math.sqrt(Math.pow(end.x - center.x, 2) + Math.pow(end.y - center.y, 2));
     const radius = (r1 + r2) / 2; 
     
-    // Исходные углы (в радианах от -PI до PI)
+    // Calculate Raw Angles (in Radians -PI to PI)
     const angStart = Math.atan2(start.y - center.y, start.x - center.x);
     const angEnd = Math.atan2(end.y - center.y, end.x - center.x);
     
-    // Направление обхода: если задано явно через CP флаг, берем его; иначе fallback на векторное произведение
-    let isCCW: boolean;
-    if (forcedIsCCW !== undefined) {
-        isCCW = forcedIsCCW;
-    } else if (prev) {
+    // Determine Winding Direction (CCW or CW) based on "Turn" from previous segment
+    // This resolves the ambiguity of which arc segment to draw (short vs long).
+    let isCCW = true;
+
+    if (prev) {
         const v1x = start.x - prev.x;
         const v1y = start.y - prev.y;
         const v2x = end.x - start.x;
         const v2y = end.y - start.y;
+        
+        // Cross Product (2D): determines turn direction relative to previous path
+        // Positive = Left Turn (CCW in standard Cartesian)
         const cross = v1x * v2y - v1y * v2x;
         isCCW = cross >= 0;
     } else {
+        // Fallback if no previous point (rare for valid CP contours): assume shortest path
         let tmpDiff = angEnd - angStart;
         while (tmpDiff <= -Math.PI) tmpDiff += 2 * Math.PI;
         while (tmpDiff > Math.PI) tmpDiff -= 2 * Math.PI;
         isCCW = tmpDiff > 0;
     }
 
+    // Calculate angular difference based on the FORCED winding direction
     let diff = angEnd - angStart;
+
     if (isCCW) {
-        // Против часовой стрелки: разность положительная (0 до 2PI)
+        // If Counter-Clockwise, difference must be Positive (0 to 2PI)
         while (diff <= 0) diff += 2 * Math.PI;
     } else {
-        // По часовой стрелке: разность отрицательная (-2PI до 0)
+        // If Clockwise, difference must be Negative (-2PI to 0)
         while (diff >= 0) diff -= 2 * Math.PI;
     }
 
-    // largeArc: 1 если дуга больше 180 градусов
+    // largeArc flag: 1 if the arc spans more than 180 degrees
     const largeArc = Math.abs(diff) > Math.PI ? 1 : 0;
 
-    // В декартовой системе Y-up:
-    // CCW (против часовой) -> Sweep = 1
-    // CW  (по часовой)    -> Sweep = 0
+    // Sweep flag: 1 for Positive angle direction (CCW), 0 for Negative (CW)
     const sweep = isCCW ? 1 : 0;
 
     return { largeArc, sweep, radius, isCCW };
@@ -295,8 +175,6 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
     let svgPath = "";
     const entities: DxfEntity[] = [];
 
-    let currentContourType: 'outer' | 'inner' = 'outer';
-
     for (let i = 0; i < geometryPoints.length; i++) {
         const pt = geometryPoints[i];
         const n = normalize(pt.x, pt.y);
@@ -304,22 +182,18 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
         const prevRaw = i > 0 ? geometryPoints[i-1] : null;
 
         if (pt.flag === 9 || pt.flag === 8) {
-            currentContourType = pt.flag === 9 ? 'inner' : 'outer';
             svgPath += `M ${n.x.toFixed(3)} ${n.y.toFixed(3)} `;
         } else if (pt.flag === 0) {
-            if (prevRaw && prevRaw.flag !== 1 && prevRaw.flag !== -1) {
+            if (prevRaw && prevRaw.flag !== -1) {
                 svgPath += `L ${n.x.toFixed(3)} ${n.y.toFixed(3)} `;
                 const prevN = normalize(prevRaw.x, prevRaw.y);
                 entities.push({
                     type: 'LINE',
                     start: { x: prevN.x, y: prevN.y },
-                    end: { x: n.x, y: n.y },
-                    contourType: currentContourType
+                    end: { x: n.x, y: n.y }
                 });
             }
-        } else if (pt.flag === 1 || pt.flag === -1) {
-            // Флаг 1  = центр дуги по часовой стрелке (CW, forcedIsCCW = false)
-            // Флаг -1 = центр дуги против часовой стрелки (CCW, forcedIsCCW = true)
+        } else if (pt.flag === -1) {
             if (i > 0 && i + 1 < geometryPoints.length) {
                 const startRaw = geometryPoints[i-1];
                 const centerRaw = pt;
@@ -331,8 +205,7 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
                     prevRawForTan = geometryPoints[i-2];
                 }
 
-                const isCCW = pt.flag === -1; // 1 -> CW, -1 -> CCW
-                const { largeArc, sweep, radius } = calculateArcParams(prevRawForTan, startRaw, centerRaw, endRaw, isCCW);
+                const { largeArc, sweep, radius, isCCW } = calculateArcParams(prevRawForTan, startRaw, centerRaw, endRaw);
                 
                 const endN = normalize(endRaw.x, endRaw.y);
                 const centerN = normalize(centerRaw.x, centerRaw.y);
@@ -354,8 +227,7 @@ export const parseCp = (content: string, fileName: string, existingTools: Tool[]
                     center: { x: centerN.x, y: centerN.y },
                     radius: radius,
                     startAngle: entityStart,
-                    endAngle: entityEnd,
-                    contourType: currentContourType
+                    endAngle: entityEnd
                 });
             }
         }
