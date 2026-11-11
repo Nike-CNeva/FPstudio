@@ -69,4 +69,12 @@ export interface AutoPunchSettings {
     microJointType: 'vertical' | 'horizontal' | 'auto'; // Updated from 'all' to 'auto'
     microJointLength: number; // "Micro-joint length"
     microJointDistance: number; // "Maximum micro-joint distance"
+
+    // Технологический контроль контура и полостей
+    checkInwardGouge: boolean;   // Проверять и блокировать заход инструмента внутрь контура детали
+    maxInwardGougeTolerance?: number; // Допуск на микрозаход внутрь (мм, обычно 0.05)
+    checkOverhang: boolean;      // Проверять и ограничивать выступ пуансона за наружный периметр
+    maxAllowedOverhang?: number; // Предельный выступ за внешний периметр (мм, например 20 мм)
+    checkLooseSlugs: boolean;    // Проверка полостей (предотвращение выпадения незакрепленных кусков металла)
+    minSlugWidth?: number;       // Минимальная ширина перемычки/отхода для предотвращения заклинивания
 }

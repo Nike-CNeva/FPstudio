@@ -43,9 +43,9 @@ export const EditorPanel: React.FC<EditorPanelProps> = ({
             </div>
 
             <div className="flex-1 overflow-y-auto p-2 space-y-1 custom-scrollbar">
-                {filteredTools.map(t => (
+                {filteredTools.map((t, index) => (
                     <div 
-                        key={t.id} 
+                        key={t.id ? `${t.id}_${index}` : `tool_${index}`} 
                         className={`p-2 rounded-md flex items-center space-x-3 cursor-pointer transition-all border ${selectedToolId === t.id ? 'bg-blue-600 border-blue-400 ring-1 ring-blue-300' : 'bg-gray-800 border-gray-600 hover:bg-gray-600'}`} 
                         onClick={() => setSelectedToolId(selectedToolId === t.id ? null : t.id)}
                     >

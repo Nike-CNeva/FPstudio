@@ -84,3 +84,122 @@ export const getToolCorners = (tool: Tool, x: number, y: number, rotation: numbe
         y: y + (p.x * sin + p.y * cos)
     }));
 };
+
+/**
+ * Возвращает полный полигональный контур инструмента с учетом формы (Circle, Square, Rectangle, Oblong).
+ * Для круга аппроксимируется 16-угольником, для продолговатого (oblong) - со скругленными краями.
+ */
+export const getToolPolygon = (tool: Tool, x: number, y: number, rotation: number): Point[] => {
+    const rad = rotation * (Math.PI / 180);
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const transform = (localX: number, localY: number): Point => ({
+        x: x + (localX * cos - localY * sin),
+        y: y + (localX * sin + localY * cos)
+    });
+
+    if (tool.shape === ToolShape.Circle) {
+        const r = tool.width / 2;
+        const pts: Point[] = [];
+        const n = 16;
+        for (let i = 0; i < n; i++) {
+            const a = (i * 2 * Math.PI) / n;
+            pts.push(transform(r * Math.cos(a), r * Math.sin(a)));
+        }
+        return pts;
+    }
+
+    if (tool.shape === ToolShape.Oblong) {
+        const w = tool.width;
+        const h = tool.height;
+        const pts: Point[] = [];
+        if (w >= h) {
+            const r = h / 2;
+            const halfStraight = (w - h) / 2;
+            // Правый полукруг
+            for (let i = -4; i <= 4; i++) {
+                const a = (i * Math.PI) / 8;
+                pts.push(transform(halfStraight + r * Math.cos(a), r * Math.sin(a)));
+            }
+            // Левый полукруг
+            for (let i = 4; i <= 12; i++) {
+                const a = (i * Math.PI) / 8;
+                pts.push(transform(-halfStraight + r * Math.cos(a), r * Math.sin(a)));
+            }
+        } else {
+            const r = w / 2;
+            const halfStraight = (h - w) / 2;
+            // Верхний полукруг
+            for (let i = 0; i <= 8; i++) {
+                const a = (i * Math.PI) / 8;
+                pts.push(transform(r * Math.cos(a), halfStraight + r * Math.sin(a)));
+            }
+            // Нижний полукруг
+            for (let i = 8; i <= 16; i++) {
+                const a = (i * Math.PI) / 8;
+                pts.push(transform(r * Math.cos(a), -halfStraight + r * Math.sin(a)));
+            }
+        }
+        return pts;
+    }
+
+    if (tool.shape === ToolShape.Special && tool.customPath) {
+        // Парсим SVG путь в полигональные точки специнструмента (относительно центра пуансона)
+        const pts = parseSvgPathToPoints(tool.customPath, tool.width, tool.height);
+        if (pts.length > 0) {
+            return pts.map(p => transform(p.x, p.y));
+        }
+    }
+
+    // По умолчанию: прямоугольник / квадрат
+    return getToolCorners(tool, x, y, rotation);
+};
+
+/**
+ * Преобразует SVG path специнструмента в центрированные вершины полигона (относительно центра 0,0).
+ */
+export const parseSvgPathToPoints = (pathStr: string, width: number, height: number): Point[] => {
+    const pts: Point[] = [];
+    const commands = pathStr.match(/[MLAZmlaz][^MLAZmlaz]*/g);
+    if (!commands) return [];
+
+    let curX = 0;
+    let curY = 0;
+
+    for (const cmd of commands) {
+        const type = cmd[0];
+        const nums = cmd.slice(1).trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n));
+
+        if (type === 'M' || type === 'L') {
+            for (let i = 0; i < nums.length; i += 2) {
+                curX = nums[i];
+                curY = nums[i + 1];
+                pts.push({ x: curX - width / 2, y: curY - height / 2 });
+            }
+        } else if (type === 'A') {
+            // A rx ry x-axis-rotation large-arc-flag sweep-flag x y
+            if (nums.length >= 7) {
+                curX = nums[5];
+                curY = nums[6];
+                pts.push({ x: curX - width / 2, y: curY - height / 2 });
+            }
+        }
+    }
+
+    return pts;
+};
+
+/**
+ * Ограничивающий прямоугольник (AABB) отпечатка удара инструмента на плоскости.
+ */
+export const getToolBoundingBox = (tool: Tool, x: number, y: number, rotation: number): { minX: number, maxX: number, minY: number, maxY: number } => {
+    const pts = getToolPolygon(tool, x, y, rotation);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of pts) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+    }
+    return { minX, maxX, minY, maxY };
+};

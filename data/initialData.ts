@@ -32,6 +32,10 @@ const createDefaultTool = (overrides: Partial<Tool>): Tool => ({
   onlyForC5: false,
   stationNumber: 0,
   stationType: 'B',
+  maxOverhang: 20,
+  maxInwardGouge: 0.05,
+  minSlugWidth: 1.0,
+  preventLooseSlugs: true,
   ...overrides,
 });
 
